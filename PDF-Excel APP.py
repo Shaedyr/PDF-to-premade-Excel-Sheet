@@ -164,7 +164,7 @@ if st.button("Extract & Update Excel"):
             extracted["nace_code"] = nace.get("kode", "")
 
             extracted["homepage"] = company_data.get("hjemmeside", "")
-            extracted["employees"] = company_data.get("antallAnsatte", ""))
+            extracted["employees"] = safe_str(company_data.get("antallAnsatte"))
 
             summary = extracted["company_name"]
             if nace.get("beskrivelse"):
