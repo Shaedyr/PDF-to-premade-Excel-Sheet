@@ -3,25 +3,34 @@ import pdfplumber
 import re
 import requests
 from openpyxl import load_workbook
+from openpyxl.styles import Alignment
 from io import BytesIO
+
 
 # =========================
 # BRØNNØYSUND API
 # =========================
 def lookup_by_org_number(org_number):
-    url = f"https://data.brreg.no/enhetsregisteret/api/enheter/{org_number}"
-    r = requests.get(url, timeout=10)
-    return r.json() if r.status_code == 200 else None
+    try:
+        url = f"https://data.brreg.no/enhetsregisteret/api/enheter/{org_number}"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except requests.RequestException as e:
+        st.error("Could not reach Brønnøysund API.")
+    return None
 
 
 def search_company_by_name(name):
-    url = "https://data.brreg.no/enhetsregisteret/api/enheter"
-    params = {"navn": name}
-    r = requests.get(url, params=params, timeout=10)
-    if r.status_code == 200:
-        data = r.json()
-        if "_embedded" in data and data["_embedded"].get("enheter"):
-            return data["_embedded"]["enheter"][0]
+    try:
+        url = "https://data.brreg.no/enhetsregisteret/api/enheter"
+        params = {"navn": name}
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("_embedded", {}).get("enheter", [None])[0]
+    except requests.RequestException:
+        st.error("Brønnøysund search failed.")
     return None
 
 
@@ -30,12 +39,16 @@ def search_company_by_name(name):
 # =========================
 def extract_pdf_text(pdf_file):
     text = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+    except Exception:
+        st.warning("Failed to read PDF file (corrupted or protected).")
     return text
+
 
 
 # =========================
@@ -45,8 +58,15 @@ def extract_fields_from_text(text):
     fields = {}
 
     # Only org number is realistic to extract reliably
-    org_match = re.search(r"\b\d{9}\b", text)
-    fields["org_number"] = org_match.group(0) if org_match else ""
+    org_match = re.search(
+    r"(?:org\.?|organisasjonsnummer)[:\s]*([0-9]{9})",
+    text,
+    re.IGNORECASE
+)
+    if not text.strip():
+        st.warning("No readable text found in PDF (possibly scanned).")
+    
+    fields["org_number"] = org_match.group(1) if org_match else ""
 
     return fields
 
@@ -55,8 +75,13 @@ def extract_fields_from_text(text):
 # EXCEL UPDATE
 # =========================
 def update_excel(template_file, data, summary):
-    wb = load_workbook(template_file)
-    ws = wb.active
+    try:
+        wb = load_workbook(template_file)
+        ws = wb.active
+    except Exception:
+        st.error("Invalid or corrupted Excel template.")
+        raise
+
 
     cell_mapping = {
         "company_name": "B14",
@@ -74,12 +99,18 @@ def update_excel(template_file, data, summary):
 
     if summary:
         ws["B10"] = f"Kort info om företaget:\n{summary}"
+        ws["B10"].alignment = Alignment(wrap_text=True)
 
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     return output
+# =========================
+# STREAMLIT UI HELPER FUNCTION
+# =========================
 
+def safe_str(value):
+    return str(value) if value is not None else ""
 
 # =========================
 # STREAMLIT UI
@@ -95,7 +126,10 @@ manual_company_name = st.text_input(
     placeholder="e.g. Eksempel AS"
 )
 
-if excel_file and st.button("Extract & Update Excel"):
+if st.button("Extract & Update Excel"):
+    if not excel_file:
+        st.error("Please upload an Excel template.")
+        st.stop()
     with st.spinner("Processing…"):
 
         extracted = {}
@@ -130,7 +164,7 @@ if excel_file and st.button("Extract & Update Excel"):
             extracted["nace_code"] = nace.get("kode", "")
 
             extracted["homepage"] = company_data.get("hjemmeside", "")
-            extracted["employees"] = company_data.get("antallAnsatte", "")
+            extracted["employees"] = company_data.get("antallAnsatte", ""))
 
             summary = extracted["company_name"]
             if nace.get("beskrivelse"):
