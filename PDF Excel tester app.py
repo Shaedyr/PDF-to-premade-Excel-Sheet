@@ -288,7 +288,6 @@ def update_excel_template(template_stream, company_data, company_summary):
             'org_number': {'cell': 'B15', 'merge_to': None, 'max_len': 20},
             'address': {'cell': 'B16', 'merge_to': 'D16', 'max_len': 100},
             'post_nr': {'cell': 'B17', 'merge_to': 'C17', 'max_len': 15},
-            'nace_code': {'cell': 'B18', 'merge_to': None, 'max_len': 10},
             'homepage': {'cell': 'B20', 'merge_to': 'D20', 'max_len': 100},
             'employees': {'cell': 'B21', 'merge_to': None, 'max_len': 10}
         }
@@ -315,7 +314,25 @@ def update_excel_template(template_stream, company_data, company_summary):
                     except:
                         pass
         
-        ws['B19'] = "Data ikke tilgjengelig"
+        # Handle NACE separately - combine code and description in B18
+        nace_code = company_data.get('nace_code', '')
+        nace_description = company_data.get('nace_description', '')
+        
+        if nace_code and nace_description:
+            # Combine both: "Description (Code)"
+            nace_combined = f"{nace_description} ({nace_code})"
+            ws['B18'] = nace_combined
+            try:
+                ws.merge_cells('B18:D18')  # Merge B18 to D18
+                ws['B18'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+            except:
+                pass
+        elif nace_code:
+            ws['B18'] = nace_code
+        elif nace_description:
+            ws['B18'] = nace_description
+        else:
+            ws['B18'] = "Data ikke tilgjengelig"
         
         ws.column_dimensions['A'].width = 15
         ws.column_dimensions['B'].width = 25
@@ -440,14 +457,25 @@ def main():
         with col_data1:
             st.write("**Selskapsinformasjon:**")
             data = st.session_state.extracted_data
-            fields = [("company_name", "Selskapsnavn"), ("org_number", "Organisasjonsnummer"),
-                     ("address", "Adresse"), ("post_nr", "Postnummer"), ("city", "Poststed"),
-                     ("nace_description", "NACE-bransje"), ("employees", "Antall ansatte"),
-                     ("homepage", "Hjemmeside")]
-            for field_key, field_label in fields:
-                value = data.get(field_key)
-                if value:
-                    st.write(f"**{field_label}:** {value}")
+            
+            # Display company info
+            st.write(f"**Selskapsnavn:** {data.get('company_name', '')}")
+            st.write(f"**Organisasjonsnummer:** {data.get('org_number', '')}")
+            st.write(f"**Adresse:** {data.get('address', '')}")
+            st.write(f"**Postnummer:** {data.get('post_nr', '')}")
+            st.write(f"**Poststed:** {data.get('city', '')}")
+            st.write(f"**Antall ansatte:** {data.get('employees', '')}")
+            st.write(f"**Hjemmeside:** {data.get('homepage', '')}")
+            
+            # Display combined NACE
+            nace_code = data.get('nace_code', '')
+            nace_description = data.get('nace_description', '')
+            if nace_code and nace_description:
+                st.write(f"**NACE-bransje/nummer:** {nace_description} ({nace_code})")
+            elif nace_code:
+                st.write(f"**NACE-nummer:** {nace_code}")
+            elif nace_description:
+                st.write(f"**NACE-bransje:** {nace_description}")
         
         with col_data2:
             if st.session_state.company_summary:
