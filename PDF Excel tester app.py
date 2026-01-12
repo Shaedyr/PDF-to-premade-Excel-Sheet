@@ -37,50 +37,84 @@ if 'company_summary' not in st.session_state:
 # WIKIPEDIA SEARCH
 # =========================
 def get_company_summary_from_wikipedia(company_name):
-    """Get a short company summary from Wikipedia"""
+    """Get a short company summary from Wikipedia with better search"""
     try:
+        # Clean the company name - remove "AS", "ASA", etc. for better search
+        search_name = company_name
+        suffixes = [" AS", " ASA", " ANS", " DA", " ENK", " KS"]
+        for suffix in suffixes:
+            if search_name.endswith(suffix):
+                search_name = search_name[:-len(suffix)].strip()
+                break
+        
+        # Try different Wikipedia search strategies
+        search_attempts = [
+            search_name,  # Without suffix
+            company_name,  # Original name
+            search_name + " (bedrift)",  # Norwegian company suffix
+            search_name + " (company)"   # English company suffix
+        ]
+        
         # Try Norwegian Wikipedia first
         wikipedia.set_lang("no")
         
-        try:
-            search_results = wikipedia.search(company_name)
-            
-            if search_results:
-                # Get the page for the first result
-                page = wikipedia.page(search_results[0], auto_suggest=False)
-                summary = page.summary
+        for attempt in search_attempts:
+            try:
+                search_results = wikipedia.search(attempt)
                 
-                # Make it shorter (3-4 sentences max)
-                sentences = [s.strip() for s in summary.split('. ') if s.strip()]
-                if len(sentences) > 3:
-                    short_summary = '. '.join(sentences[:3]) + '.'
-                else:
-                    short_summary = summary
+                if search_results:
+                    # Look for results that contain company-related keywords
+                    company_results = []
+                    for result in search_results[:3]:  # Check first 3 results
+                        result_lower = result.lower()
+                        if any(keyword in result_lower for keyword in ["as", "asa", "bedrift", "selskap", "company", "group"]):
+                            company_results.append(result)
+                    
+                    if company_results:
+                        page = wikipedia.page(company_results[0], auto_suggest=False)
+                        summary = page.summary
+                        
+                        # Extract 2-3 sentences
+                        sentences = [s.strip() for s in summary.split('. ') if s.strip()]
+                        if len(sentences) > 2:
+                            short_summary = '. '.join(sentences[:2]) + '.'
+                        else:
+                            short_summary = summary[:300] + '...' if len(summary) > 300 else summary
+                        
+                        return short_summary
+                        
+            except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
+                continue
+        
+        # If Norwegian Wikipedia fails, try English
+        wikipedia.set_lang("en")
+        
+        for attempt in search_attempts:
+            try:
+                search_results = wikipedia.search(attempt)
                 
-                return short_summary
-                
-        except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
-            # Try English Wikipedia
-            wikipedia.set_lang("en")
-            search_results = wikipedia.search(company_name)
-            
-            if search_results:
-                try:
+                if search_results:
                     page = wikipedia.page(search_results[0], auto_suggest=False)
                     summary = page.summary
                     
                     sentences = [s.strip() for s in summary.split('. ') if s.strip()]
-                    if len(sentences) > 3:
-                        short_summary = '. '.join(sentences[:3]) + '.'
+                    if len(sentences) > 2:
+                        short_summary = '. '.join(sentences[:2]) + '.'
                     else:
-                        short_summary = summary
+                        short_summary = summary[:300] + '...' if len(summary) > 300 else summary
+                    
+                    # Translate key terms to Norwegian
+                    short_summary = short_summary.replace(" is a ", " er et ")
+                    short_summary = short_summary.replace(" company", " selskap")
+                    short_summary = short_summary.replace(" based in ", " med hovedkontor i ")
                     
                     return short_summary
-                except:
-                    pass
                     
+            except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
+                continue
+                
     except Exception as e:
-        st.warning(f"Wikipedia search note: {str(e)[:100]}")
+        print(f"Wikipedia error: {e}")
     
     return None
 
@@ -117,8 +151,7 @@ def create_summary_from_brreg_data(company_data):
         return f"{company_name} er et norsk selskap."
     
     return ' '.join(parts)
-
-
+    
 # =========================
 # BRØNNØYSUND API - COMPANY NAME SEARCH ONLY
 # =========================
