@@ -585,19 +585,18 @@ def main():
                 st.write("**Sammendrag (går i celle A2:D13):**")
                 st.info(st.session_state.company_summary)
     
-        # Download section
-if st.session_state.get('excel_ready', False):
-    st.markdown("---")
-    st.subheader("📥 Last ned")
-    
-    company_name = st.session_state.extracted_data.get('company_name', 'selskap')
-    
-    # FIXED LINE: Use Unicode flag instead of explicit Norwegian characters
-    safe_name = re.sub(r'[^\w\s-]', '', company_name, flags=re.UNICODE)
-    safe_name = re.sub(r'[-\s]+', '_', safe_name)
-    
-    download_filename = f"{safe_name}_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    
+          # Download section
+    if st.session_state.get('excel_ready', False):
+        st.markdown("---")
+        st.subheader("📥 Last ned")
+        
+        company_name_dl = st.session_state.extracted_data.get('company_name', 'selskap')
+        
+        safe_name = re.sub(r'[^\w\s-]', '', company_name_dl, flags=re.UNICODE)
+        safe_name = re.sub(r'[-\s]+', '_', safe_name)
+        
+        download_filename = f"{safe_name}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
         st.download_button(
             label="⬇️ Last ned oppdatert Excel",
             data=st.session_state.excel_file,
@@ -606,6 +605,7 @@ if st.session_state.get('excel_ready', False):
             use_container_width=True,
             type="primary"
         )
+        
     
     # Footer
     st.markdown("---")
