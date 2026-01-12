@@ -237,7 +237,7 @@ def load_template_from_github():
                 return BytesIO(f.read())
         
         # Try to load from GitHub
-        github_url = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/Grundmall.xlsx"
+        github_url = "https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/PremadeExcelTemplate.xlsx"
         response = requests.get(github_url, timeout=30)
         
         if response.status_code == 200:
