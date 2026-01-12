@@ -5,50 +5,131 @@ import requests
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from io import BytesIO
-import time
+import pandas as pd
+import json
+from datetime import datetime
+import wikipedia
+import os
 
 
 # =========================
-# BRØNNØYSUND API
+# CONFIGURATION
 # =========================
-def lookup_by_org_number(org_number):
-    """Lookup company by organization number with better error handling"""
-    if not org_number or not str(org_number).strip().isdigit():
-        return None
-    
-    org_number = str(org_number).strip()
-    if len(org_number) != 9:
-        return None
-    
+st.set_page_config(
+    page_title="PDF → Excel (Brønnøysund)",
+    layout="wide",
+    page_icon="📊",
+    initial_sidebar_state="expanded"
+)
+
+# Session state initialization
+if 'extracted_data' not in st.session_state:
+    st.session_state.extracted_data = {}
+if 'api_response' not in st.session_state:
+    st.session_state.api_response = None
+if 'excel_ready' not in st.session_state:
+    st.session_state.excel_ready = False
+if 'company_summary' not in st.session_state:
+    st.session_state.company_summary = ""
+
+
+# =========================
+# WIKIPEDIA SEARCH
+# =========================
+def get_company_summary_from_wikipedia(company_name):
+    """Get a short company summary from Wikipedia"""
     try:
-        url = f"https://data.brreg.no/enhetsregisteret/api/enheter/{org_number}"
-        headers = {
-            "User-Agent": "CompanyDataExtractor/1.0",
-            "Accept": "application/json"
-        }
-        r = requests.get(url, headers=headers, timeout=15)
+        # Try Norwegian Wikipedia first
+        wikipedia.set_lang("no")
         
-        if r.status_code == 200:
-            return r.json()
-        elif r.status_code == 404:
-            st.warning(f"Organization number {org_number} not found in Brønnøysund")
-        else:
-            st.warning(f"API returned status code: {r.status_code}")
+        try:
+            search_results = wikipedia.search(company_name)
             
-    except requests.Timeout:
-        st.error("Request to Brønnøysund API timed out. Please try again.")
-    except requests.RequestException as e:
-        st.error(f"Network error: {str(e)}")
+            if search_results:
+                # Get the page for the first result
+                page = wikipedia.page(search_results[0], auto_suggest=False)
+                summary = page.summary
+                
+                # Make it shorter (3-4 sentences max)
+                sentences = [s.strip() for s in summary.split('. ') if s.strip()]
+                if len(sentences) > 3:
+                    short_summary = '. '.join(sentences[:3]) + '.'
+                else:
+                    short_summary = summary
+                
+                return short_summary
+                
+        except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
+            # Try English Wikipedia
+            wikipedia.set_lang("en")
+            search_results = wikipedia.search(company_name)
+            
+            if search_results:
+                try:
+                    page = wikipedia.page(search_results[0], auto_suggest=False)
+                    summary = page.summary
+                    
+                    sentences = [s.strip() for s in summary.split('. ') if s.strip()]
+                    if len(sentences) > 3:
+                        short_summary = '. '.join(sentences[:3]) + '.'
+                    else:
+                        short_summary = summary
+                    
+                    return short_summary
+                except:
+                    pass
+                    
     except Exception as e:
-        st.error(f"Unexpected error during API call: {str(e)}")
+        st.warning(f"Wikipedia search note: {str(e)[:100]}")
     
     return None
 
 
+def create_summary_from_brreg_data(company_data):
+    """Create summary from Brønnøysund data if Wikipedia fails"""
+    company_name = company_data.get('company_name', '')
+    industry = company_data.get('nace_description', '')
+    city = company_data.get('city', '')
+    employees = company_data.get('employees', '')
+    founded = company_data.get('registration_date', '')
+    
+    parts = []
+    
+    if company_name:
+        if industry:
+            parts.append(f"{company_name} er et {industry.lower()} selskap")
+        else:
+            parts.append(f"{company_name} er et norsk selskap")
+        
+        if city:
+            parts.append(f"med hovedkontor i {city}.")
+        else:
+            parts.append(".")
+    
+    if founded:
+        year = founded.split('-')[0] if '-' in founded else founded
+        parts.append(f"Selskapet ble etablert i {year}.")
+    
+    if employees:
+        parts.append(f"Det har omtrent {employees} ansatte.")
+    
+    if not parts:
+        return f"{company_name} er et norsk selskap."
+    
+    return ' '.join(parts)
+
+
+# =========================
+# BRØNNØYSUND API - COMPANY NAME SEARCH ONLY
+# =========================
+@st.cache_data(ttl=3600)
 def search_company_by_name(name):
-    """Search company by name with improved matching"""
+    """Search company by name only (no org number search)"""
     if not name or len(name.strip()) < 2:
+        st.warning("Vennligst skriv inn minst 2 tegn for selskapsnavn")
         return None
+    
+    search_term = name.strip()
     
     try:
         url = "https://data.brreg.no/enhetsregisteret/api/enheter"
@@ -57,353 +138,480 @@ def search_company_by_name(name):
             "Accept": "application/json"
         }
         params = {
-            "navn": name.strip(),
-            "size": 5  # Get top 5 results
+            "navn": search_term,
+            "size": 5,
+            "organisasjonsform": "AS,ASA,ENK,ANS,DA"
         }
-        r = requests.get(url, headers=headers, params=params, timeout=15)
         
-        if r.status_code == 200:
-            data = r.json()
+        with st.spinner(f"Søker etter '{search_term}'..."):
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
             companies = data.get("_embedded", {}).get("enheter", [])
             
-            if companies:
-                # Try to find exact match first
-                exact_matches = [c for c in companies if c.get("navn", "").lower() == name.lower()]
-                if exact_matches:
-                    return exact_matches[0]
-                # Otherwise return the first result
-                return companies[0]
-        elif r.status_code == 404:
-            st.warning(f"No companies found with name: '{name}'")
+            if not companies:
+                st.warning(f"Ingen selskaper funnet med navn: '{search_term}'")
+                return None
+            
+            # Find best match
+            best_match = None
+            best_score = 0
+            
+            for company in companies:
+                score = 0
+                company_name = company.get('navn', '').lower()
+                search_lower = search_term.lower()
+                
+                # Exact match
+                if company_name == search_lower:
+                    score += 100
+                
+                # Starts with search term
+                if company_name.startswith(search_lower):
+                    score += 50
+                
+                # Contains search term
+                if search_lower in company_name:
+                    score += 30
+                
+                # Active companies
+                if company.get('konkurs') == False:
+                    score += 20
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = company
+            
+            if best_match:
+                st.success(f"✅ Funnet: {best_match.get('navn')}")
+                return best_match
+            
+        elif response.status_code == 404:
+            st.warning(f"Ingen selskaper funnet for: '{search_term}'")
+        else:
+            st.error(f"API feil: {response.status_code}")
             
     except requests.RequestException as e:
-        st.error(f"Search failed: {str(e)}")
+        st.error(f"Søk feilet: {str(e)}")
     
     return None
 
 
 # =========================
-# PDF TEXT EXTRACTION
+# PDF TEXT EXTRACTION (OPTIONAL)
 # =========================
-def extract_pdf_text(pdf_file):
-    """Extract text from PDF with improved error handling"""
-    text = ""
+def extract_pdf_text_improved(pdf_file):
+    """Extract text from PDF (optional - for reference only)"""
+    all_text = ""
+    
     try:
         with pdfplumber.open(pdf_file) as pdf:
-            total_pages = len(pdf.pages)
             progress_bar = st.progress(0)
             
             for i, page in enumerate(pdf.pages):
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+                text = page.extract_text()
+                if text:
+                    all_text += text + "\n\n"
                 
                 # Update progress
-                progress_bar.progress((i + 1) / total_pages)
-                time.sleep(0.01)  # Small delay for smoother progress bar
-                
+                progress_bar.progress((i + 1) / len(pdf.pages))
+            
             progress_bar.empty()
             
-            if not text.strip():
-                st.warning("No readable text found in PDF. It might be scanned or image-based.")
-                
-    except pdfplumber.PDFSyntaxError:
-        st.error("Invalid or corrupted PDF file.")
-        return ""
     except Exception as e:
-        st.error(f"Failed to read PDF: {str(e)}")
-        return ""
+        st.warning(f"Kunne ikke lese PDF: {str(e)}")
     
-    return text
+    return all_text
 
 
 # =========================
-# IMPROVED PDF FIELD EXTRACTION
+# EXCEL PROCESSING
 # =========================
-def extract_fields_from_text(text):
-    """Extract company information from text with multiple patterns"""
-    fields = {}
-    
-    if not text.strip():
-        return fields
-    
-    # Multiple patterns for organization number
-    org_patterns = [
-        r"organisasjonsnummer[:\s]*([0-9]{9})",
-        r"org\.?nr\.?[:\s]*([0-9]{9})",
-        r"org[:\s]*([0-9]{9})",
-        r"([0-9]{9})\s*\(orgnr\)",
-        r"\b([0-9]{9})\b(?=[^0-9]*\b(?:org|organisasjonsnummer)\b)"
-    ]
-    
-    org_number = None
-    for pattern in org_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            org_number = match.group(1)
-            break
-    
-    # Try to find any 9-digit number that could be an org number
-    if not org_number:
-        potential_numbers = re.findall(r'\b\d{9}\b', text)
-        for num in potential_numbers:
-            # Basic validation: Norwegian org numbers have specific patterns
-            if num.startswith(('8', '9')) or (800000000 <= int(num) <= 999999999):
-                org_number = num
-                break
-    
-    fields["org_number"] = org_number if org_number else ""
-    
-    # Try to extract company name
-    company_patterns = [
-        r"(?:Firma|Selskap|Company)[:\s]*(.+)",
-        r"(.+(?:AS|ASA|DA|ANS|ENK|KS)\b)"
-    ]
-    
-    company_name = None
-    for pattern in company_patterns:
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if match:
-            company_name = match.group(1).strip()
-            # Clean up the name
-            company_name = re.sub(r'[\n\r]+', ' ', company_name)
-            break
-    
-    fields["company_name"] = company_name if company_name else ""
-    
-    return fields
+def load_template_from_github():
+    """Load the Excel template from GitHub or local file"""
+    try:
+        # Try local file first (for development)
+        if os.path.exists("Grundmall.xlsx"):
+            with open("Grundmall.xlsx", "rb") as f:
+                return BytesIO(f.read())
+        
+        # Try to load from GitHub
+        github_url = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/Grundmall.xlsx"
+        response = requests.get(github_url, timeout=30)
+        
+        if response.status_code == 200:
+            return BytesIO(response.content)
+        else:
+            st.error("Kunne ikke laste Excel-malen fra GitHub")
+            return None
+            
+    except Exception as e:
+        st.error(f"Feil ved lasting av mal: {str(e)}")
+        return None
 
 
-# =========================
-# EXCEL UPDATE
-# =========================
-def update_excel(template_file, data, summary):
+def update_excel_template(template_stream, company_data, company_summary):
     """Update Excel template with company data"""
     try:
-        wb = load_workbook(template_file)
-        ws = wb.active
+        # Load workbook
+        wb = load_workbook(template_stream)
         
-        # Verify template has required cells
-        required_cells = ["B14", "B15", "B16", "B17", "B18", "B21", "B22", "B10"]
-        for cell in required_cells:
-            if ws[cell] is None:
-                st.warning(f"Cell {cell} not found in template. Using available cells.")
+        # Get first sheet (always use first sheet)
+        ws = wb.worksheets[0]
+        
+        # Rename sheet 1 to company name
+        company_name = company_data.get('company_name', 'Selskap')
+        safe_sheet_name = clean_sheet_name(f"{company_name} Info")
+        ws.title = safe_sheet_name[:31]  # Excel limit: 31 chars
+        
+        # Rename sheet 2 if it exists
+        if len(wb.worksheets) > 1:
+            ws2 = wb.worksheets[1]
+            ws2.title = clean_sheet_name(f"{company_name} Anbud")[:31]
+        
+        # Update BIG INFORMATION WINDOW (A2:D13 merged cell)
+        # First, check if cells are already merged
+        cell_range = 'A2:D13'
+        
+        # Unmerge if already merged
+        for merged_range in list(ws.merged_cells.ranges):
+            if str(merged_range) == cell_range:
+                ws.unmerge_cells(str(merged_range))
+        
+        # Merge the cells
+        ws.merge_cells(cell_range)
+        
+        # Set the company summary text
+        if company_summary:
+            ws['A2'] = company_summary
+        else:
+            ws['A2'] = f"Informasjon om {company_name}"
+        
+        # Style the merged cell
+        ws['A2'].alignment = Alignment(
+            wrap_text=True,
+            vertical='top',
+            horizontal='left'
+        )
+        
+        # Adjust row height for better visibility
+        for row in range(2, 14):
+            ws.row_dimensions[row].height = 18
+        
+        # Update company data in column B
+        data_mapping = {
+            'company_name': 'B14',    # Kunde
+            'org_number': 'B15',      # Org-nr
+            'address': 'B16',         # Adresse
+            'post_nr': 'B17',         # Post-nr
+            'nace_code': 'B18',       # NACE-kode
+            'homepage': 'B20',        # Hjemmeside
+            'employees': 'B21'        # Number of Employees
+        }
+        
+        # Update each field
+        for field, cell in data_mapping.items():
+            value = company_data.get(field, '')
+            if value:
+                if field == 'org_number' and len(str(value)) == 9:
+                    ws[cell] = f"'{value}"  # Keep leading zeros
+                else:
+                    ws[cell] = str(value)
+        
+        # Revenue 2024 (B19) - placeholder for now
+        ws['B19'] = "Data ikke tilgjengelig"
+        
+        # Save to BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        return output
         
     except Exception as e:
-        st.error(f"Invalid Excel template: {str(e)}")
-        raise
+        st.error(f"Excel oppdatering feilet: {str(e)}")
+        
+        # Fallback: create simple Excel
+        try:
+            df = pd.DataFrame([company_data])
+            output = BytesIO()
+            df.to_excel(output, index=False, engine='openpyxl')
+            output.seek(0)
+            return output
+        except:
+            # Last resort
+            wb = load_workbook()
+            ws = wb.active
+            ws.title = company_data.get('company_name', 'Selskap')[:31]
+            ws['A1'] = "Feil ved oppdatering. Data:"
+            for i, (key, value) in enumerate(company_data.items(), 2):
+                ws.cell(row=i, column=1, value=key)
+                ws.cell(row=i, column=2, value=value)
+            
+            output = BytesIO()
+            wb.save(output)
+            output.seek(0)
+            return output
 
-    # Cell mapping with validation
-    cell_mapping = {
-        "company_name": "B14",
-        "org_number": "B15",
-        "address": "B16",
-        "post_nr": "B17",
-        "nace_code": "B18",
-        "homepage": "B21",
-        "employees": "B22",
+
+def clean_sheet_name(name):
+    """Clean sheet name for Excel (remove invalid characters)"""
+    invalid_chars = ['\\', '/', '*', '?', ':', '[', ']']
+    for char in invalid_chars:
+        name = name.replace(char, '')
+    return name.strip()
+
+
+def format_company_data(api_data):
+    """Format API response into structured data"""
+    if not api_data:
+        return {}
+    
+    formatted = {
+        "company_name": api_data.get("navn", ""),
+        "org_number": api_data.get("organisasjonsnummer", ""),
+        "nace_code": "",
+        "nace_description": "",
+        "homepage": api_data.get("hjemmeside", ""),
+        "employees": api_data.get("antallAnsatte", ""),
+        "address": "",
+        "post_nr": "",
+        "city": "",
+        "registration_date": api_data.get("stiftelsesdato", "")
     }
-
-    # Update cells with data
-    for field, cell in cell_mapping.items():
-        value = data.get(field, "")
-        if value:
-            ws[cell] = str(value)
     
-    # Update summary with wrapping
-    if summary:
-        ws["B10"] = f"Kort info om företaget:\n{summary}"
-        ws["B10"].alignment = Alignment(wrap_text=True, vertical='top')
+    # Address information
+    addr = api_data.get("forretningsadresse", {})
+    if addr:
+        address_lines = addr.get("adresse", [])
+        if isinstance(address_lines, list):
+            formatted["address"] = ", ".join(filter(None, address_lines))
+        
+        formatted["post_nr"] = addr.get("postnummer", "")
+        formatted["city"] = addr.get("poststed", "")
     
-    # Adjust column width for better display
-    for column in ['A', 'B', 'C']:
-        ws.column_dimensions[column].width = 25
+    # NACE code
+    nace = api_data.get("naeringskode1", {})
+    if nace:
+        formatted["nace_code"] = nace.get("kode", "")
+        formatted["nace_description"] = nace.get("beskrivelse", "")
     
-    # Save to BytesIO
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output
+    return formatted
 
 
 # =========================
 # STREAMLIT UI
 # =========================
-st.set_page_config(
-    page_title="PDF → Excel (Brreg)",
-    layout="centered",
-    page_icon="📊"
-)
-
-st.title("📄➡️📊 PDF → Excel (Brønnøysund)")
-st.markdown("---")
-
-# Sidebar for instructions
-with st.sidebar:
-    st.header("Instructions")
-    st.markdown("""
-    1. **Upload Excel Template** (required)
-    2. **Upload PDF** (optional - for automatic data extraction)
-    3. **Enter company name** if not found in PDF
-    4. Click **"Extract & Update Excel"**
-    
-    The app will:
-    - Extract data from PDF (if provided)
-    - Fetch company details from Brønnøysund
-    - Update your Excel template
-    - Provide download link
-    """)
-
-# Main content area
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Upload Files")
-    excel_file = st.file_uploader(
-        "Upload Excel template *",
-        type="xlsx",
-        help="Required: Your Excel template file"
-    )
-    
-    pdf_file = st.file_uploader(
-        "Upload PDF (optional)",
-        type="pdf",
-        help="Optional: PDF containing company information"
-    )
-
-with col2:
-    st.subheader("Company Information")
-    
-    manual_company_name = st.text_input(
-        "Company name *",
-        placeholder="e.g. Eksempel AS",
-        help="Required if not found in PDF"
-    )
-    
-    manual_org_number = st.text_input(
-        "Organization number (optional)",
-        placeholder="e.g. 999999999",
-        help="Optional: 9-digit Norwegian organization number"
-    )
-    
-    st.caption("(*) Required fields")
-
-st.markdown("---")
-
-# Processing section
-if st.button("🚀 Extract & Update Excel", type="primary", use_container_width=True):
-    if not excel_file:
-        st.error("❌ Please upload an Excel template file.")
-        st.stop()
-    
-    if not manual_company_name and not pdf_file:
-        st.error("❌ Please provide either a PDF file or a company name.")
-        st.stop()
-    
-    with st.spinner("Processing your request..."):
-        st.info("Step 1: Extracting data from sources")
-        extracted = {}
+def main():
+    # Sidebar
+    with st.sidebar:
+        st.title("⚙️ Innstillinger")
         
-        # STEP 1 — Extract from PDF if provided
-        if pdf_file:
-            with st.expander("PDF Extraction Details", expanded=False):
-                st.write("Extracting text from PDF...")
-                pdf_text = extract_pdf_text(pdf_file)
-                if pdf_text:
-                    extracted = extract_fields_from_text(pdf_text)
-                    st.code(pdf_text[:500] + "..." if len(pdf_text) > 500 else pdf_text)
+        st.markdown("---")
+        st.subheader("Instruksjoner")
+        st.markdown("""
+        1. **Last opp PDF** (valgfritt) - for referanse
+        2. **Skriv inn selskapsnavn**
+        3. Klikk **Prosesser** for å hente data
+        4. **Last ned** oppdatert Excel-fil
         
-        # STEP 2 — Determine lookup keys (manual input overrides PDF)
-        company_name = manual_company_name.strip() if manual_company_name else extracted.get("company_name", "")
-        org_number = manual_org_number.strip() if manual_org_number else extracted.get("org_number", "")
+        **Funksjoner:**
+        - Automatisk søk i Brønnøysund
+        - Wikipedia-sammendrag om selskapet
+        - Excel-mal fra GitHub
+        - Arknavn endres til selskapsnavn
+        """)
         
-        st.info("Step 2: Fetching from Brønnøysund")
+        st.markdown("---")
+        st.caption(f"Sist oppdatert: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    
+    # Main content
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.title("📄 PDF → Excel (Brønnøysund)")
+        st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
+    
+    with col2:
+        st.image("https://img.icons8.com/color/96/000000/parse-from-clipboard.png", width=80)
+    
+    st.markdown("---")
+    
+    # File upload section
+    col_upload1, col_upload2 = st.columns(2)
+    
+    with col_upload1:
+        st.subheader("📂 Last opp filer")
         
-        # STEP 3 — Brønnøysund lookup (try org number first, then name)
-        company_data = None
-        lookup_source = ""
+        pdf_file = st.file_uploader(
+            "PDF dokument (valgfritt)",
+            type="pdf",
+            help="Last opp PDF for referanse",
+            key="pdf_upload"
+        )
+    
+    with col_upload2:
+        st.subheader("🏢 Selskapsinformasjon")
         
-        if org_number:
-            with st.status("Looking up by organization number..."):
-                company_data = lookup_by_org_number(org_number)
-                if company_data:
-                    lookup_source = f"Organization number: {org_number}"
-        
-        if not company_data and company_name:
-            with st.status(f"Searching by company name: '{company_name}'..."):
-                company_data = search_company_by_name(company_name)
-                if company_data:
-                    lookup_source = f"Company name: {company_name}"
-        
-        # STEP 4 — Normalize and prepare data
-        if company_data:
-            st.success(f"✅ Company found via {lookup_source}")
-            
-            # Extract and format data
-            extracted["company_name"] = company_data.get("navn", "")
-            extracted["org_number"] = company_data.get("organisasjonsnummer", "")
-            
-            # Address handling
-            addr = company_data.get("forretningsadresse") or {}
-            address_parts = addr.get("adresse", [])
-            if isinstance(address_parts, list):
-                extracted["address"] = ", ".join(filter(None, address_parts))
+        company_name = st.text_input(
+            "Selskapsnavn *",
+            placeholder="F.eks. Equinor ASA",
+            help="Skriv inn fullt navn på selskapet",
+            key="company_name_input"
+        )
+    
+    st.markdown("---")
+    
+    # Load template at startup
+    if 'template_loaded' not in st.session_state:
+        with st.spinner("Laster Excel-mal..."):
+            template_stream = load_template_from_github()
+            if template_stream:
+                st.session_state.template_stream = template_stream
+                st.session_state.template_loaded = True
+                st.success("✅ Excel-mal lastet")
             else:
-                extracted["address"] = str(address_parts)
-            
-            extracted["post_nr"] = addr.get("postnummer", "")
-            extracted["poststed"] = addr.get("poststed", "")
-            
-            # NACE code
-            nace = company_data.get("naeringskode1", {})
-            extracted["nace_code"] = nace.get("kode", "")
-            nace_description = nace.get("beskrivelse", "")
-            
-            # Other info
-            extracted["homepage"] = company_data.get("hjemmeside", "")
-            extracted["employees"] = str(company_data.get("antallAnsatte", ""))
-            
-            # Create summary
-            summary_parts = [extracted["company_name"]]
-            if nace_description:
-                summary_parts.append(f"NACE: {nace_description}")
-            if extracted["employees"]:
-                summary_parts.append(f"Employees: {extracted['employees']}")
-            
-            summary = " | ".join(summary_parts)
-            
-        else:
-            st.warning("⚠️ Company not found in Brønnøysund. Using extracted data only.")
-            summary = extracted.get("company_name", "Company information not found")
+                st.error("❌ Kunne ikke laste Excel-mal")
+    
+    # Process button
+    if st.button("🚀 Prosesser & Oppdater Excel", type="primary", use_container_width=True):
+        if not company_name or not company_name.strip():
+            st.error("❌ Vennligst skriv inn et selskapsnavn")
+            st.stop()
         
-        # Display extracted data
-        st.info("Step 3: Data to be inserted")
-        with st.expander("View extracted data", expanded=True):
-            st.json({k: v for k, v in extracted.items() if v})
+        if not st.session_state.get('template_loaded', False):
+            st.error("❌ Excel-mal ikke tilgjengelig")
+            st.stop()
         
-        st.info("Step 4: Updating Excel template")
+        # Initialize
+        extracted_data = {}
+        api_data = None
         
-        # Update Excel
+        # Step 1: Extract from PDF (optional)
+        if pdf_file:
+            with st.expander("📊 PDF-ekstraksjon", expanded=False):
+                st.write("**Trinn 1:** Leser PDF...")
+                pdf_text = extract_pdf_text_improved(pdf_file)
+                
+                if pdf_text:
+                    st.info(f"Lest {len(pdf_text)} tegn fra PDF")
+                    # Display first 500 characters
+                    st.text_area("Forhåndsvisning:", pdf_text[:500] + "..." if len(pdf_text) > 500 else pdf_text, height=150)
+        
+        # Step 2: Search Brønnøysund
+        st.write("**Trinn 2:** Søker i Brønnøysund...")
+        api_data = search_company_by_name(company_name.strip())
+        
+        if not api_data:
+            st.error("❌ Fant ikke selskapet i Brønnøysund. Sjekk navnet og prøv igjen.")
+            st.stop()
+        
+        # Step 3: Format data
+        formatted_data = format_company_data(api_data)
+        st.session_state.extracted_data = formatted_data
+        st.session_state.api_response = api_data
+        
+        # Step 4: Get Wikipedia summary
+        st.write("**Trinn 3:** Søker etter selskapsopplysninger...")
+        
+        company_summary = None
+        with st.spinner("Søker på Wikipedia..."):
+            company_summary = get_company_summary_from_wikipedia(company_name)
+            
+            if not company_summary:
+                st.info("Fant ikke Wikipedia-artikkel. Lager sammendrag fra Brønnøysund-data.")
+                company_summary = create_summary_from_brreg_data(formatted_data)
+        
+        st.session_state.company_summary = company_summary
+        
+        # Step 5: Update Excel
+        st.write("**Trinn 4:** Oppdaterer Excel...")
+        
         try:
-            updated_excel = update_excel(excel_file, extracted, summary)
+            updated_excel = update_excel_template(
+                st.session_state.template_stream,
+                formatted_data,
+                company_summary
+            )
             
-            st.success("🎉 Excel updated successfully!")
+            st.session_state.excel_ready = True
+            st.session_state.excel_file = updated_excel
             
-            # Download button
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.download_button(
-                    label="📥 Download Updated Excel",
-                    data=updated_excel,
-                    file_name=f"updated_{extracted.get('company_name', 'template').replace(' ', '_')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+            st.success("✅ Excel-fil oppdatert!")
             
+            # Show where information was placed
+            st.info(f"""
+            **Informasjon plassert i:**
+            - **Ark 1:** {clean_sheet_name(f"{formatted_data.get('company_name', 'Selskap')} Info")[:31]}
+            - **Stort informasjonsvindu:** Celle A2:D13 (sammendrag)
+            - **Selskapsdata:** Celler B14-B21
+            - **Ark 2:** {clean_sheet_name(f"{formatted_data.get('company_name', 'Selskap')} Anbud")[:31]}
+            - **Ark 3:** Skader (uendret)
+            """)
             
         except Exception as e:
-            st.error(f"❌ Failed to update Excel: {str(e)}")
+            st.error(f"❌ Feil ved Excel-oppdatering: {str(e)}")
+    
+    # Display results if available
+    if st.session_state.extracted_data:
+        st.markdown("---")
+        st.subheader("📋 Ekstraherte data")
+        
+        col_data1, col_data2 = st.columns(2)
+        
+        with col_data1:
+            st.write("**Selskapsinformasjon:**")
+            data = st.session_state.extracted_data
+            
+            fields_to_show = [
+                ("company_name", "Selskapsnavn"),
+                ("org_number", "Organisasjonsnummer"),
+                ("address", "Adresse"),
+                ("post_nr", "Postnummer"),
+                ("city", "Poststed"),
+                ("nace_description", "NACE-bransje"),
+                ("employees", "Antall ansatte"),
+                ("homepage", "Hjemmeside")
+            ]
+            
+            for field_key, field_label in fields_to_show:
+                value = data.get(field_key)
+                if value:
+                    st.write(f"**{field_label}:** {value}")
+        
+        with col_data2:
+            if st.session_state.company_summary:
+                st.write("**Sammendrag (går i celle A2:D13):**")
+                st.info(st.session_state.company_summary)
+    
+    # Download section
+    if st.session_state.get('excel_ready', False):
+        st.markdown("---")
+        st.subheader("📥 Last ned")
+        
+        company_name = st.session_state.extracted_data.get('company_name', 'selskap')
+        safe_name = re.sub(r'[^\w\s-æøåÆØÅ]', '', company_name)
+        safe_name = re.sub(r'[-\s]+', '_', safe_name)
+        
+        download_filename = f"{safe_name}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+        st.download_button(
+            label="⬇️ Last ned oppdatert Excel",
+            data=st.session_state.excel_file,
+            file_name=download_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
+    
+    # Footer
+    st.markdown("---")
+    st.caption("""
+    Drevet av Brønnøysund Enhetsregisteret API og Wikipedia | 
+    Data er mellomlagret i 1 time
+    """)
 
-# Footer
-st.markdown("---")
-st.caption("Powered by Brønnøysund Enhetsregisteret API | Data extraction tool")
+
+if __name__ == "__main__":
+    main()
