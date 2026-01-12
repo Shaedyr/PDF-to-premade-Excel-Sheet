@@ -608,8 +608,30 @@ def main():
         formatted_data = format_company_data(api_data)
         st.session_state.extracted_data = formatted_data
         st.session_state.api_response = api_data
+
         
-        # Step 4: Get Wikipedia summary
+        
+                # Step 4: Get company summary (3-step approach)
+        st.write("**Trinn 3:** Søker etter selskapsopplysninger...")
+        
+        company_summary = None
+        
+        # Step 1: Try Wikipedia
+        with st.spinner("Trinn 1: Søker på Wikipedia..."):
+            company_summary = get_company_summary_from_wikipedia(company_name)
+        
+        # Step 2: If Wikipedia fails, try web search
+        if not company_summary:
+            st.info("Fant ikke på Wikipedia. Prøver websøk...")
+            with st.spinner("Trinn 2: Søker på nettet..."):
+                company_summary = get_company_summary_from_web(company_name)
+        
+        # Step 3: If web search also fails, use Brønnøysund data analysis
+        if not company_summary:
+            st.info("Fant ikke på nettet. Lager analyse fra Brønnøysund-data...")
+            company_summary = create_summary_from_brreg_data(formatted_data)
+        
+       # Step 4: Get Wikipedia summary
         st.write("**Trinn 3:** Søker etter selskapsopplysninger...")
         
         company_summary = None
@@ -621,7 +643,9 @@ def main():
                 company_summary = create_summary_from_brreg_data(formatted_data)
         
         st.session_state.company_summary = company_summary
+
         
+       
         # Step 5: Update Excel
         st.write("**Trinn 4:** Oppdaterer Excel...")
         
