@@ -118,39 +118,69 @@ def get_company_summary_from_wikipedia(company_name):
     
     return None
 
-
 def create_summary_from_brreg_data(company_data):
-    """Create summary from Brønnøysund data if Wikipedia fails"""
+    """Create an analytical business summary from company data"""
     company_name = company_data.get('company_name', '')
     industry = company_data.get('nace_description', '')
     city = company_data.get('city', '')
     employees = company_data.get('employees', '')
     founded = company_data.get('registration_date', '')
     
-    parts = []
+    if not company_name:
+        return "Ingen informasjon tilgjengelig om dette selskapet."
     
-    if company_name:
-        if industry:
-            parts.append(f"{company_name} er et {industry.lower()} selskap")
-        else:
-            parts.append(f"{company_name} er et norsk selskap")
-        
-        if city:
-            parts.append(f"med hovedkontor i {city}.")
-        else:
-            parts.append(".")
+    summary_parts = []
     
+    # 1. Company introduction with business context
+    if industry and city:
+        summary_parts.append(f"{company_name} driver {industry.lower()} virksomhet fra {city}.")
+    elif industry:
+        summary_parts.append(f"{company_name} opererer innen {industry.lower()}.")
+    else:
+        summary_parts.append(f"{company_name} er et registrert norsk selskap.")
+    
+    # 2. Add business maturity insight based on founding year
     if founded:
-        year = founded.split('-')[0] if '-' in founded else founded
-        parts.append(f"Selskapet ble etablert i {year}.")
+        try:
+            year = founded.split('-')[0] if '-' in founded else founded
+            years_old = datetime.now().year - int(year)
+            
+            if years_old > 30:
+                summary_parts.append(f"Etablert i {year}, har selskapet over {years_old} års bransjeerfaring.")
+            elif years_old > 10:
+                summary_parts.append(f"Selskapet har utviklet seg over {years_old} år siden etableringen i {year}.")
+            else:
+                summary_parts.append(f"Etablert i {year}, er dette et yngre selskap i vekstfasen.")
+        except:
+            summary_parts.append(f"Selskapet ble registrert i {founded}.")
     
+    # 3. Add company size context
     if employees:
-        parts.append(f"Det har omtrent {employees} ansatte.")
+        try:
+            emp_count = int(employees)
+            if emp_count > 200:
+                summary_parts.append(f"Som en større arbeidsgiver med {emp_count} ansatte, har det betydelig samfunnspåvirkning.")
+            elif emp_count > 50:
+                summary_parts.append(f"Med {emp_count} ansatte representerer det et mellomstort foretak.")
+            elif emp_count > 10:
+                summary_parts.append(f"Selskapet sysselsetter {emp_count} personer.")
+            else:
+                summary_parts.append(f"Dette er et mindre selskap med {emp_count} ansatte.")
+        except:
+            pass
     
-    if not parts:
-        return f"{company_name} er et norsk selskap."
+    # 4. Ensure we have at least 3-4 sentences
+    if len(summary_parts) < 3:
+        summary_parts.append("Virksomheten er registrert og i god stand i Brønnøysundregistrene.")
     
-    return ' '.join(parts)
+    # Combine and format
+    summary = ' '.join(summary_parts)
+    
+    # Ensure it's not too long for the Excel cell
+    if len(summary) > 800:
+        summary = summary[:797] + "..."
+    
+    return summary
     
 # =========================
 # BRØNNØYSUND API - COMPANY NAME SEARCH ONLY
