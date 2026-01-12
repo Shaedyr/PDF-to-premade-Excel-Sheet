@@ -400,8 +400,6 @@ if st.button("🚀 Extract & Update Excel", type="primary", use_container_width=
                     use_container_width=True
                 )
             
-            # Success metrics
-            st.balloons()
             
         except Exception as e:
             st.error(f"❌ Failed to update Excel: {str(e)}")
