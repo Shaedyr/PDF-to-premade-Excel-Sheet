@@ -283,9 +283,8 @@ def load_template_from_github():
         st.error(f"Feil ved lasting av mal: {str(e)}")
         return None
 
-
 def update_excel_template(template_stream, company_data, company_summary):
-    """Update Excel template with company data"""
+    """Update Excel template with company data and merge cells for long text"""
     try:
         # Load workbook
         wb = load_workbook(template_stream)
@@ -332,28 +331,63 @@ def update_excel_template(template_stream, company_data, company_summary):
         for row in range(2, 14):
             ws.row_dimensions[row].height = 18
         
-        # Update company data in column B
+        # Update company data with cell merging for long text
         data_mapping = {
-            'company_name': 'B14',    # Kunde
-            'org_number': 'B15',      # Org-nr
-            'address': 'B16',         # Adresse
-            'post_nr': 'B17',         # Post-nr
-            'nace_code': 'B18',       # NACE-kode
-            'homepage': 'B20',        # Hjemmeside
-            'employees': 'B21'        # Number of Employees
+            'company_name': {'cell': 'B14', 'merge_to': 'D14', 'max_length': 50},
+            'org_number': {'cell': 'B15', 'merge_to': None, 'max_length': 20},
+            'address': {'cell': 'B16', 'merge_to': 'D16', 'max_length': 100},
+            'post_nr': {'cell': 'B17', 'merge_to': 'C17', 'max_length': 15},
+            'nace_code': {'cell': 'B18', 'merge_to': None, 'max_length': 10},
+            'homepage': {'cell': 'B20', 'merge_to': 'D20', 'max_length': 100},
+            'employees': {'cell': 'B21', 'merge_to': None, 'max_length': 10}
         }
         
-        # Update each field
-        for field, cell in data_mapping.items():
+        # Update each field with merging if needed
+        for field, config in data_mapping.items():
             value = company_data.get(field, '')
             if value:
+                cell = config['cell']
+                merge_to = config['merge_to']
+                max_length = config['max_length']
+                
+                # Truncate if too long
+                if len(str(value)) > max_length:
+                    value = str(value)[:max_length-3] + "..."
+                
                 if field == 'org_number' and len(str(value)) == 9:
                     ws[cell] = f"'{value}"  # Keep leading zeros
                 else:
                     ws[cell] = str(value)
+                
+                # Merge cells if merge_to is specified and value is long
+                if merge_to and len(str(value)) > 20:
+                    try:
+                        # Unmerge any existing merged cells in this range
+                        for merged_range in list(ws.merged_cells.ranges):
+                            if cell in str(merged_range) or merge_to in str(merged_range):
+                                ws.unmerge_cells(str(merged_range))
+                        
+                        # Merge the cells
+                        merge_range = f"{cell}:{merge_to}"
+                        ws.merge_cells(merge_range)
+                        
+                        # Apply alignment
+                        ws[cell].alignment = Alignment(
+                            wrap_text=True,
+                            vertical='center',
+                            horizontal='left'
+                        )
+                    except Exception as e:
+                        print(f"Could not merge {cell} to {merge_to}: {e}")
         
         # Revenue 2024 (B19) - placeholder for now
         ws['B19'] = "Data ikke tilgjengelig"
+        
+        # Adjust column widths for better display
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 25
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 15
         
         # Save to BytesIO
         output = BytesIO()
