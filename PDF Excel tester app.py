@@ -339,21 +339,7 @@ def update_excel_template(template_stream, company_data, company_summary):
 # STREAMLIT UI
 # =========================
 def main():
-    with st.sidebar:
-        st.title("⚙️ Innstillinger")
-        st.markdown("---")
-        st.markdown("""
-        **Instruksjoner:**
-        1. Skriv inn selskapsnavn
-        2. Klikk Prosesser
-        3. Last ned Excel
-        
-        **Funksjoner:**
-        - Søk i Brønnøysund
-        - Wikipedia & websøk
-        - Automatisk Excel-oppdatering
-        """)
-        st.caption(f"Sist oppdatert: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    # REMOVED THE ENTIRE SIDEBAR SECTION
     
     st.title("📄 PDF → Excel (Brønnøysund)")
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
