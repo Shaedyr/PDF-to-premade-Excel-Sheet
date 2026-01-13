@@ -155,89 +155,67 @@ def create_summary_from_brreg_data(company_data):
     return summary[:797] + "..." if len(summary) > 800 else summary
 
 # =========================
-# BRØNNØYSUND API - UPDATED WITH DROPDOWN
+# BRØNNØYSUND API - LIVE SEARCH WITH DROPDOWN
 # =========================
 @st.cache_data(ttl=3600)
-def search_company_by_name(name):
-    """Search company by name"""
+def search_companies_live(name):
+    """Search companies and return list for dropdown"""
     if not name or len(name.strip()) < 2:
-        st.warning("Skriv inn minst 2 tegn")
-        return None
+        return []
     
     search_term = name.strip()
     
     try:
         url = "https://data.brreg.no/enhetsregisteret/api/enheter"
+        params = {"navn": search_term, "size": 10}
         
-        # Search for the company
-        params = {"navn": search_term, "size": 15}
-        
-        with st.spinner(f"Søker etter '{search_term}'..."):
-            response = requests.get(url, params=params, timeout=30)
+        response = requests.get(url, params=params, timeout=30)
         
         if response.status_code == 200:
             data = response.json()
             companies = data.get("_embedded", {}).get("enheter", [])
-            
-            if companies:
-                # ALWAYS show dropdown when multiple companies found
-                if len(companies) > 1:
-                    st.info(f"Fant {len(companies)} selskap(er) for '{search_term}'")
-                    
-                    # Create a list of company options for dropdown
-                    company_options = []
-                    
-                    for company in companies:
-                        company_name = company.get('navn', 'Ukjent navn')
-                        org_num = company.get('organisasjonsnummer', '')
-                        city = company.get('forretningsadresse', {}).get('poststed', '')
-                        
-                        # Create display text
-                        display_text = f"{company_name}"
-                        if org_num:
-                            display_text += f" (Org.nr: {org_num})"
-                        if city:
-                            display_text += f" - {city}"
-                        
-                        company_options.append({
-                            'display': display_text,
-                            'company': company
-                        })
-                    
-                    # Create dropdown list for user selection
-                    dropdown_options = ["-- Velg selskap --"] + [opt['display'] for opt in company_options]
-                    
-                    selected_option = st.selectbox(
-                        "🔍 Velg riktig selskap:",
-                        dropdown_options,
-                        key=f"select_company_{search_term}"
-                    )
-                    
-                    # If user selected a company
-                    if selected_option and selected_option != "-- Velg selskap --":
-                        # Find the selected company
-                        for opt in company_options:
-                            if opt['display'] == selected_option:
-                                st.success(f"✅ Valgt: {opt['company'].get('navn')}")
-                                return opt['company']
-                        return None  # No selection made
-                    else:
-                        st.warning("Vennligst velg et selskap fra listen")
-                        return None
-                
-                # If only one company found, use it automatically
-                else:
-                    st.success(f"✅ Funnet: {companies[0].get('navn')}")
-                    return companies[0]
-            else:
-                st.warning(f"Ingen selskaper funnet: '{search_term}'")
-                return None
-    except Exception as e:
-        st.error(f"Søk feilet: {str(e)}")
-        return None
-
+            return companies if companies else []
+    except:
+        pass
     
+    return []
 
+def get_company_details(company):
+    """Extract details from company API response"""
+    if not company:
+        return None
+    
+    formatted = {
+        "company_name": company.get("navn", ""),
+        "org_number": company.get("organisasjonsnummer", ""),
+        "nace_code": "",
+        "nace_description": "",
+        "homepage": company.get("hjemmeside", ""),
+        "employees": company.get("antallAnsatte", ""),
+        "address": "",
+        "post_nr": "",
+        "city": "",
+        "registration_date": company.get("stiftelsesdato", "")
+    }
+    
+    addr = company.get("forretningsadresse", {})
+    if addr:
+        address_lines = addr.get("adresse", [])
+        if isinstance(address_lines, list):
+            formatted["address"] = ", ".join(filter(None, address_lines))
+        formatted["post_nr"] = addr.get("postnummer", "")
+        formatted["city"] = addr.get("poststed", "")
+    
+    nace = company.get("naeringskode1", {})
+    if nace:
+        formatted["nace_code"] = nace.get("kode", "")
+        formatted["nace_description"] = nace.get("beskrivelse", "")
+    
+    return formatted
+
+# =========================
+# FORMAT COMPANY DATA FUNCTION
+# =========================
 def format_company_data(api_data):
     """Format API response"""
     if not api_data:
@@ -397,14 +375,76 @@ def main():
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
     
+    # Initialize session state for selected company
+    if 'selected_company_data' not in st.session_state:
+        st.session_state.selected_company_data = None
+    if 'companies_list' not in st.session_state:
+        st.session_state.companies_list = []
+    
     col1, col2 = st.columns(2)
+    
     with col1:
         pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf", help="Last opp PDF for referanse")
+    
     with col2:
-        company_name = st.text_input("Selskapsnavn *", placeholder="F.eks. Equinor ASA", help="Skriv inn fullt navn")
+        # Search input with live search
+        company_name_input = st.text_input(
+            "Selskapsnavn *", 
+            placeholder="F.eks. Equinor ASA", 
+            help="Skriv inn navn og velg fra listen",
+            key="company_search_input"
+        )
+        
+        # Live search as user types
+        if company_name_input and len(company_name_input.strip()) >= 2:
+            companies = search_companies_live(company_name_input)
+            st.session_state.companies_list = companies
+            
+            if companies:
+                # Create dropdown options
+                options = ["-- Velg selskap --"]
+                company_dict = {}
+                
+                for company in companies:
+                    name = company.get('navn', 'Ukjent navn')
+                    org_num = company.get('organisasjonsnummer', '')
+                    city = company.get('forretningsadresse', {}).get('poststed', '')
+                    
+                    display_text = f"{name}"
+                    if org_num:
+                        display_text += f" (Org.nr: {org_num})"
+                    if city:
+                        display_text += f" - {city}"
+                    
+                    options.append(display_text)
+                    company_dict[display_text] = company
+                
+                # Show dropdown
+                selected = st.selectbox(
+                    "🔍 Velg fra søkeresultater:",
+                    options,
+                    key="company_dropdown"
+                )
+                
+                # If user selects a company
+                if selected and selected != "-- Velg selskap --":
+                    selected_company = company_dict[selected]
+                    st.session_state.selected_company_data = get_company_details(selected_company)
+                    st.success(f"✅ Valgt: {selected_company.get('navn')}")
+                else:
+                    st.session_state.selected_company_data = None
+                    if company_name_input and len(company_name_input.strip()) >= 3:
+                        st.warning("Vennligst velg et selskap fra listen")
+            else:
+                if company_name_input and len(company_name_input.strip()) >= 3:
+                    st.warning("Ingen selskaper funnet. Prøv et annet navn.")
+                st.session_state.selected_company_data = None
+        else:
+            st.session_state.selected_company_data = None
     
     st.markdown("---")
     
+    # Load Excel template (only once)
     if 'template_loaded' not in st.session_state:
         with st.spinner("Laster Excel-mal..."):
             template_stream = load_template_from_github()
@@ -415,41 +455,34 @@ def main():
             else:
                 st.error("❌ Kunne ikke laste Excel-mal")
     
+    # Process button
     if st.button("🚀 Prosesser & Oppdater Excel", type="primary", use_container_width=True):
-        if not company_name:
-            st.error("❌ Vennligst skriv inn selskapsnavn")
+        if not st.session_state.selected_company_data:
+            st.error("❌ Vennligst velg et selskap fra listen først")
             st.stop()
         
         if not st.session_state.get('template_loaded'):
             st.error("❌ Excel-mal ikke tilgjengelig")
             st.stop()
         
-        # Step 1: Search Brønnøysund
-        st.write("**Trinn 1:** Søker i Brønnøysund...")
-        api_data = search_company_by_name(company_name.strip())
-        
-        if not api_data:
-            st.error("❌ Fant ikke selskapet. Sjekk navnet.")
-            st.stop()
-        
-        # Step 2: Format data
-        formatted_data = format_company_data(api_data)
+        # Get the selected company data
+        formatted_data = st.session_state.selected_company_data
         st.session_state.extracted_data = formatted_data
-        st.session_state.api_response = api_data
         
-        # Step 3: Get company summary (3-step approach)
-        st.write("**Trinn 2:** Søker etter selskapsopplysninger...")
+        # Get company summary (3-step approach)
+        st.write("**Trinn 1:** Søker etter selskapsopplysninger...")
         
         company_summary = None
+        company_name = formatted_data.get('company_name', '')
         
         # Step 1: Try Wikipedia
-        with st.spinner("Trinn 1: Søker på Wikipedia..."):
+        with st.spinner("Søker på Wikipedia..."):
             company_summary = get_company_summary_from_wikipedia(company_name)
         
         # Step 2: If Wikipedia fails, try web search
         if not company_summary:
             st.info("Fant ikke på Wikipedia. Prøver websøk...")
-            with st.spinner("Trinn 2: Søker på nettet..."):
+            with st.spinner("Søker på nettet..."):
                 company_summary = get_company_summary_from_web(company_name)
         
         # Step 3: If web search also fails, use Brønnøysund data analysis
@@ -459,8 +492,8 @@ def main():
         
         st.session_state.company_summary = company_summary
         
-        # Step 4: Update Excel
-        st.write("**Trinn 3:** Oppdaterer Excel...")
+        # Update Excel
+        st.write("**Trinn 2:** Oppdaterer Excel...")
         
         try:
             updated_excel = update_excel_template(
@@ -484,6 +517,7 @@ def main():
         except Exception as e:
             st.error(f"❌ Feil ved Excel-oppdatering: {str(e)}")
     
+    # Display extracted data
     if st.session_state.extracted_data:
         st.markdown("---")
         st.subheader("📋 Ekstraherte data")
@@ -517,6 +551,7 @@ def main():
                 st.write("**Sammendrag (går i celle A2:D13):**")
                 st.info(st.session_state.company_summary)
     
+    # Download button
     if st.session_state.get('excel_ready', False):
         st.markdown("---")
         st.subheader("📥 Last ned")
