@@ -246,7 +246,16 @@ def main():
             updated = update_excel_template(st.session_state.template_bytes, data, summary)
             if updated:
                 st.session_state.excel_ready = True; st.session_state.excel_bytes = updated; st.success("✅ Excel-fil oppdatert!")
-                st.info(f"**Informasjon plassert i:**\n- **Ark 1:** {re.sub(r'[\\/*?:\\[\\]]','', f\"{data.get('company_name','Selskap')} Info\")[:31]}\n- **Stort informasjonsvindu:** Celle A2:D13\n- **Selskapsdata:** Celler B14-B21\n- **Ark 2:** {re.sub(r'[\\/*?:\\[\\]]','', f\"{data.get('company_name','Selskap')} Anbud\")[:31]}")
+                # Compute safe sheet names before formatting the long f-string to avoid escaping issues
+                sheet1 = re.sub(r'[\\/*?:\[\]]', '', f"{data.get('company_name','Selskap')} Info")[:31]
+                sheet2 = re.sub(r'[\\/*?:\[\]]', '', f"{data.get('company_name','Selskap')} Anbud")[:31]
+                st.info(
+                    f"**Informasjon plassert i:**\n"
+                    f"- **Ark 1:** {sheet1}\n"
+                    f"- **Stort informasjonsvindu:** Celle A2:D13\n"
+                    f"- **Selskapsdata:** Celler B14-B21\n"
+                    f"- **Ark 2:** {sheet2}"
+                )
             else:
                 st.error("❌ Kunne ikke generere Excel-fil")
         except Exception as e:
