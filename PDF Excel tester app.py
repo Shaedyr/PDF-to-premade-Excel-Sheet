@@ -419,46 +419,67 @@ def main():
     with col1:
         pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf", help="Last opp PDF for referanse")
 
-    with col2:
-        # Search input with live search
+        with col2:
+        # Initialize search tracking
+        if 'last_search' not in st.session_state:
+            st.session_state.last_search = ""
+        
+        # Track if dropdown should be shown
+        if 'show_dropdown' not in st.session_state:
+            st.session_state.show_dropdown = False
+        
+        # Search input with automatic refresh
         company_name_input = st.text_input(
             "Selskapsnavn *",
             placeholder="F.eks. Equinor ASA",
-            help="Skriv inn navn og velg fra listen",
-            key="company_search_input"
+            help="Skriv inn navn - søk starter automatisk",
+            key="company_search_input",
+            on_change=lambda: None  # This triggers on every change
         )
-
-        # Live search as user types
-        if company_name_input and len(company_name_input.strip()) >= 2:
-            companies = search_companies_live(company_name_input)
-            st.session_state.companies_list = companies
-
+        
+        # Check if search text has changed
+        current_search = company_name_input.strip() if company_name_input else ""
+        
+        # If search has changed and has at least 2 characters, trigger search
+        if current_search and len(current_search) >= 2:
+            if current_search != st.session_state.get('last_search', ''):
+                # Update last search
+                st.session_state.last_search = current_search
+                st.session_state.show_dropdown = True
+                # Force immediate rerun to show dropdown
+                st.rerun()
+        
+        # Show dropdown if we have a search term
+        if st.session_state.get('show_dropdown', False) and st.session_state.last_search:
+            # Perform the search
+            companies = search_companies_live(st.session_state.last_search)
+            
             if companies:
                 # Create dropdown options
                 options = ["-- Velg selskap --"]
                 company_dict = {}
-
+                
                 for company in companies:
                     name = company.get('navn', 'Ukjent navn')
                     org_num = company.get('organisasjonsnummer', '')
                     city = company.get('forretningsadresse', {}).get('poststed', '')
-
+                    
                     display_text = f"{name}"
                     if org_num:
                         display_text += f" (Org.nr: {org_num})"
                     if city:
                         display_text += f" - {city}"
-
+                    
                     options.append(display_text)
                     company_dict[display_text] = company
-
+                
                 # Show dropdown
                 selected = st.selectbox(
-                    "🔍 Velg fra søkeresultater:",
+                    "🔍 Søkeresultater:",
                     options,
                     key="company_dropdown"
                 )
-
+                
                 # If user selects a company
                 if selected and selected != "-- Velg selskap --":
                     selected_company = company_dict[selected]
@@ -466,10 +487,8 @@ def main():
                     st.success(f"✅ Valgt: {selected_company.get('navn')}")
                 else:
                     st.session_state.selected_company_data = None
-                    if company_name_input and len(company_name_input.strip()) >= 3:
-                        st.warning("Vennligst velg et selskap fra listen")
             else:
-                if company_name_input and len(company_name_input.strip()) >= 3:
+                if len(st.session_state.last_search) >= 3:
                     st.warning("Ingen selskaper funnet. Prøv et annet navn.")
                 st.session_state.selected_company_data = None
         else:
