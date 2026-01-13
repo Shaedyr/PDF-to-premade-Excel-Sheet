@@ -155,7 +155,7 @@ def create_summary_from_brreg_data(company_data):
     return summary[:797] + "..." if len(summary) > 800 else summary
 
 # =========================
-# BRØNNØYSUND API
+# BRØNNØYSUND API - UPDATED WITH DROPDOWN
 # =========================
 @st.cache_data(ttl=3600)
 def search_company_by_name(name):
@@ -164,10 +164,13 @@ def search_company_by_name(name):
         st.warning("Skriv inn minst 2 tegn")
         return None
     
-    search_term = name.strip().upper()  # Convert to uppercase for consistent comparison
+    search_term = name.strip()
+    
     try:
         url = "https://data.brreg.no/enhetsregisteret/api/enheter"
-        params = {"navn": search_term, "size": 20, "organisasjonsform": "AS,ASA,ENK,ANS,DA"}
+        
+        # Search for the company
+        params = {"navn": search_term, "size": 15}
         
         with st.spinner(f"Søker etter '{search_term}'..."):
             response = requests.get(url, params=params, timeout=30)
@@ -177,122 +180,63 @@ def search_company_by_name(name):
             companies = data.get("_embedded", {}).get("enheter", [])
             
             if companies:
-                # First, try exact case-insensitive match
-                exact_match = None
-                for company in companies:
-                    company_name_upper = company.get('navn', '').upper()
-                    if company_name_upper == search_term:
-                        exact_match = company
-                        break
-                
-                if exact_match:
-                    st.success(f"✅ Funnet eksakt treff: {exact_match.get('navn')}")
-                    return exact_match
-                
-                # If no exact match, try case-insensitive startswith
-                startswith_match = None
-                for company in companies:
-                    company_name_upper = company.get('navn', '').upper()
-                    if company_name_upper.startswith(search_term):
-                        startswith_match = company
-                        break
-                
-                if startswith_match:
-                    st.success(f"✅ Funnet delvis treff: {startswith_match.get('navn')}")
-                    return startswith_match
-                
-                # If still no match, use the original scoring system but with exact word matching
-                best_match = None
-                best_score = 0
-                
-                # Split search term into words for better matching
-                search_words = search_term.split()
-                
-                for company in companies:
-                    score = 0
-                    company_name_upper = company.get('navn', '').upper()
+                # ALWAYS show dropdown when multiple companies found
+                if len(companies) > 1:
+                    st.info(f"Fant {len(companies)} selskap(er) for '{search_term}'")
                     
-                    # Check if all search words are in company name
-                    all_words_match = all(word in company_name_upper for word in search_words)
-                    if all_words_match:
-                        score += 80
+                    # Create a list of company options for dropdown
+                    company_options = []
                     
-                    # Calculate percentage match
-                    if search_term in company_name_upper:
-                        match_percentage = (len(search_term) / len(company_name_upper)) * 100
-                        score += match_percentage
+                    for company in companies:
+                        company_name = company.get('navn', 'Ukjent navn')
+                        org_num = company.get('organisasjonsnummer', '')
+                        city = company.get('forretningsadresse', {}).get('poststed', '')
+                        
+                        # Create display text
+                        display_text = f"{company_name}"
+                        if org_num:
+                            display_text += f" (Org.nr: {org_num})"
+                        if city:
+                            display_text += f" - {city}"
+                        
+                        company_options.append({
+                            'display': display_text,
+                            'company': company
+                        })
                     
-                    if company.get('konkurs') == False:
-                        score += 10
+                    # Create dropdown list for user selection
+                    dropdown_options = ["-- Velg selskap --"] + [opt['display'] for opt in company_options]
                     
-                    if score > best_score:
-                        best_score = score
-                        best_match = company
+                    selected_option = st.selectbox(
+                        "🔍 Velg riktig selskap:",
+                        dropdown_options,
+                        key=f"select_company_{search_term}"
+                    )
+                    
+                    # If user selected a company
+                    if selected_option and selected_option != "-- Velg selskap --":
+                        # Find the selected company
+                        for opt in company_options:
+                            if opt['display'] == selected_option:
+                                st.success(f"✅ Valgt: {opt['company'].get('navn')}")
+                                return opt['company']
+                        return None  # No selection made
+                    else:
+                        st.warning("Vennligst velg et selskap fra listen")
+                        return None
                 
-                if best_match:
-                    st.success(f"✅ Funnet: {best_match.get('navn')}")
-                    return best_match
-                
-                # If no good match found, return the first result with warning
-                if companies:
-                    st.warning(f"Ingen eksakt treff. Fant: {companies[0].get('navn')}")
+                # If only one company found, use it automatically
+                else:
+                    st.success(f"✅ Funnet: {companies[0].get('navn')}")
                     return companies[0]
-                    
             else:
                 st.warning(f"Ingen selskaper funnet: '{search_term}'")
                 return None
     except Exception as e:
         st.error(f"Søk feilet: {str(e)}")
-    
-    return None
-
-# =========================
-# Dropdown Function
-# =========================
-def search_company_by_name_with_selection(name):
-    """Search company by name with manual selection option"""
-    if not name or len(name.strip()) < 2:
-        st.warning("Skriv inn minst 2 tegn")
         return None
+
     
-    search_term = name.strip().upper()
-    try:
-        url = "https://data.brreg.no/enhetsregisteret/api/enheter"
-        params = {"navn": search_term, "size": 10, "organisasjonsform": "AS,ASA,ENK,ANS,DA"}
-        
-        with st.spinner(f"Søker etter '{search_term}'..."):
-            response = requests.get(url, params=params, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            companies = data.get("_embedded", {}).get("enheter", [])
-            
-            if companies:
-                if len(companies) == 1:
-                    st.success(f"✅ Funnet: {companies[0].get('navn')}")
-                    return companies[0]
-                else:
-                    # Show selection dropdown if multiple companies found
-                    company_names = [f"{c.get('navn')} ({c.get('organisasjonsnummer')})" for c in companies]
-                    selected = st.selectbox(
-                        "Flere selskaper funnet. Velg ett:",
-                        company_names,
-                        key="company_selection"
-                    )
-                    
-                    if selected:
-                        org_num = selected.split('(')[-1].strip(')')
-                        for company in companies:
-                            if company.get('organisasjonsnummer') == org_num:
-                                return company
-                    
-                    return None
-            else:
-                st.warning(f"Ingen selskaper funnet: '{search_term}'")
-    except Exception as e:
-        st.error(f"Søk feilet: {str(e)}")
-    
-    return None
 
 def format_company_data(api_data):
     """Format API response"""
