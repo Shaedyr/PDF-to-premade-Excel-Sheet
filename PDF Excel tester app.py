@@ -403,23 +403,29 @@ def update_excel_template(template_bytes, company_data, company_summary):
 # =========================
 def main():
     # REMOVED THE ENTIRE SIDEBAR SECTION
-
+    
     st.title("📄 PDF → Excel (Brønnøysund)")
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
-
-    # Initialize session state for selected company
+    
+    # Initialize ALL session state variables needed
     if 'selected_company_data' not in st.session_state:
         st.session_state.selected_company_data = None
     if 'companies_list' not in st.session_state:
         st.session_state.companies_list = []
-
+    if 'current_search' not in st.session_state:
+        st.session_state.current_search = ""
+    if 'last_search' not in st.session_state:
+        st.session_state.last_search = ""
+    if 'show_dropdown' not in st.session_state:
+        st.session_state.show_dropdown = False
+    
     col1, col2 = st.columns(2)
-
+    
     with col1:
         pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf", help="Last opp PDF for referanse")
-
-                with col2:
+    
+    with col2:
         # Create a container for the search results
         search_results_container = st.container()
         
