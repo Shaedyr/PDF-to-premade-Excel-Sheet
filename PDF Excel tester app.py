@@ -6,10 +6,16 @@ from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
+# =========================
+# CONFIGURATION
+# =========================
 st.set_page_config(page_title="PDF → Excel (Brønnøysund)", layout="wide", page_icon="📊")
 for k, v in {"extracted_data": {}, "api_response": None, "excel_ready": False, "company_summary": ""}.items():
     if k not in st.session_state: st.session_state[k] = v
 
+# =========================
+# WIKIPEDIA / WEB SEARCH HELPERS
+# =========================
 def _strip_suffix(name: str):
     return re.sub(r'\b(AS|ASA|ANS|DA|ENK|KS|BA)\b\.?$', '', (name or ''), flags=re.I).strip()
 
@@ -54,6 +60,9 @@ def _web_summary(name: str):
             continue
     return None
 
+# =========================
+# BRØNNØYSUND DATA SUMMARY
+# =========================
 def create_summary_from_brreg_data(d: dict):
     name = d.get("company_name","")
     if not name: return "Ingen informasjon tilgjengelig om dette selskapet."
@@ -84,6 +93,9 @@ def create_summary_from_brreg_data(d: dict):
     s = ' '.join(parts)
     return s[:797] + "..." if len(s) > 800 else s
 
+# =========================
+# BRØNNØYSUND LIVE SEARCH
+# =========================
 @st.cache_data(ttl=3600)
 def search_companies_live(name: str):
     if not name or len(name.strip()) < 2: return []
@@ -113,6 +125,9 @@ def get_company_details(company: dict):
         out["nace_description"] = nace.get("beskrivelse","")
     return out
 
+# =========================
+# EXCEL TEMPLATE HANDLING
+# =========================
 def load_template_from_github():
     try:
         if os.path.exists("Grundmall.xlsx"):
@@ -136,7 +151,7 @@ def update_excel_template(template_bytes: bytes, data: dict, summary: str):
         if len(wb.worksheets) > 1:
             try: wb.worksheets[1].title = safe(f"{cname} Anbud")
             except Exception: pass
-        # info box
+        # Update info box
         for rng in list(ws.merged_cells.ranges):
             if str(rng) == 'A2:D13':
                 try: ws.unmerge_cells(str(rng))
@@ -184,7 +199,19 @@ def update_excel_template(template_bytes: bytes, data: dict, summary: str):
         except Exception:
             return None
 
+# =========================
+# STREAMLIT UI
+# =========================
 def main():
+    # Force Streamlit to run the script immediately on text input changes
+    if 'force_rerun' not in st.session_state:
+        st.session_state.force_rerun = False
+    
+    # If we detect text input change, force a rerun
+    if st.session_state.get('force_rerun', False):
+        st.session_state.force_rerun = False
+        st.rerun()
+        
     # session keys
     for k in ('selected_company_data','companies_list','current_search','last_search','show_dropdown'):
         if k not in st.session_state: st.session_state[k] = None if k=='selected_company_data' else [] if k=='companies_list' else "" if k in ('current_search','last_search') else False
@@ -195,29 +222,65 @@ def main():
     c1, c2 = st.columns(2)
     with c1:
         _ = st.file_uploader("PDF dokument (valgfritt)", type="pdf", help="Last opp PDF for referanse")
+        
     with c2:
-        container = st.container()
-        q = st.text_input("Selskapsnavn *", placeholder="Skriv her... (minst 2 bokstaver)", help="Søk starter automatisk når du skriver", key="live_search_input")
-        if st.session_state.get('current_search','') != q:
+        # Search input
+        q = st.text_input(
+            "Selskapsnavn *", 
+            placeholder="Skriv her... (minst 2 bokstaver)", 
+            help="Søk starter automatisk når du skriver",
+            key="live_search_input"
+        )
+        
+        # Clear previous selection if search changes
+        if st.session_state.get('current_search', '') != q:
             st.session_state.selected_company_data = None
+        
+        # Store current search
         st.session_state.current_search = q
+        
+        # PERFORM SEARCH AND SHOW DROPDOWN IMMEDIATELY
+        # No need for container - just show it directly
         if q and len(q.strip()) >= 2:
-            with container:
-                with st.spinner("Søker..."):
-                    comps = search_companies_live(q)
-                if comps:
-                    opts = ["-- Velg selskap --"]
-                    cd = {}
-                    for c in comps:
-                        name = c.get('navn','Ukjent navn'); org = c.get('organisasjonsnummer',''); city = c.get('forretningsadresse',{}).get('poststed','')
-                        disp = f"{name}" + (f" (Org.nr: {org})" if org else "") + (f" - {city}" if city else "")
-                        opts.append(disp); cd[disp]=c
-                    sel = st.selectbox("🔍 Søkeresultater:", opts, key="dynamic_company_dropdown")
-                    if sel and sel != "-- Velg selskap --":
-                        st.session_state.selected_company_data = get_company_details(cd[sel]); st.success(f"✅ Valgt: {cd[sel].get('navn')}")
-                else:
-                    if len(q.strip()) >= 3: st.warning("Ingen selskaper funnet. Prøv et annet navn.")
-                    st.session_state.selected_company_data = None
+            # Show loading spinner
+            with st.spinner("Søker..."):
+                comps = search_companies_live(q)
+            
+            # Show dropdown if we have results
+            if comps:
+                # Create options for dropdown
+                options = ["-- Velg selskap --"]
+                company_dict = {}
+                
+                for company in comps:
+                    name = company.get('navn', 'Ukjent navn')
+                    org_num = company.get('organisasjonsnummer', '')
+                    city = company.get('forretningsadresse', {}).get('poststed', '')
+                    
+                    display_text = f"{name}"
+                    if org_num:
+                        display_text += f" (Org.nr: {org_num})"
+                    if city:
+                        display_text += f" - {city}"
+                    
+                    options.append(display_text)
+                    company_dict[display_text] = company
+                
+                # SHOW THE DROPDOWN - this is the key part!
+                selected = st.selectbox(
+                    "🔍 Søkeresultater:",
+                    options,
+                    key="dynamic_company_dropdown"
+                )
+                
+                # Handle selection
+                if selected and selected != "-- Velg selskap --":
+                    st.session_state.selected_company_data = get_company_details(company_dict[selected])
+                    st.success(f"✅ Valgt: {company_dict[selected].get('navn')}")
+            else:
+                if len(q.strip()) >= 3:
+                    st.warning("Ingen selskaper funnet. Prøv et annet navn.")
+                st.session_state.selected_company_data = None
 
     st.markdown("---")
     if 'template_loaded' not in st.session_state:
@@ -261,6 +324,9 @@ def main():
         except Exception as e:
             st.error(f"❌ Feil ved Excel-oppdatering: {e}")
 
+    # =========================
+    # DISPLAY EXTRACTED DATA
+    # =========================
     if st.session_state.extracted_data:
         st.markdown("---"); st.subheader("📋 Ekstraherte data")
         d1, d2 = st.columns(2)
@@ -281,6 +347,9 @@ def main():
             if st.session_state.company_summary:
                 st.write("**Sammendrag (går i celle A2:D13):**"); st.info(st.session_state.company_summary)
 
+    # =========================
+    # DOWNLOAD
+    # =========================
     if st.session_state.get('excel_ready') and st.session_state.get('excel_bytes'):
         st.markdown("---"); st.subheader("📥 Last ned")
         cname = st.session_state.extracted_data.get('company_name','selskap')
