@@ -5,11 +5,11 @@ import requests
 import wikipedia
 import streamlit as st
 import pandas as pd
-import pdfplumber
 from io import BytesIO
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
+import pdfplumber
 from bs4 import BeautifulSoup
 
 # =========================
@@ -22,6 +22,12 @@ for k, v in {"extracted_data": {}, "api_response": None, "excel_ready": False, "
 for k in ('selected_company_data', 'companies_list', 'current_search', 'last_search', 'show_dropdown'):
     if k not in st.session_state:
         st.session_state[k] = None if k == 'selected_company_data' else [] if k == 'companies_list' else "" if k in ('current_search','last_search') else False
+
+# =========================
+# EXCEL CLOUD CONFIGURATION
+# =========================
+# Your Excel Cloud share link - DIRECTLY IN THE CODE
+EXCEL_CLOUD_SHARE_LINK = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?e=ccyPnQ"
 
 # =========================
 # HELPERS: SUMMARY (wiki/web/brreg)
@@ -459,67 +465,119 @@ def extract_fields_from_pdf_bytes(pdf_bytes):
     return fields
 
 # =========================
-# EXCEL CLOUD TEMPLATE LOADER - WORKING VERSION
+# EXCEL CLOUD TEMPLATE LOADER - SIMPLE WORKING VERSION
 # =========================
 def load_template_from_excel_cloud():
     """
-    Load Excel template directly from Excel Cloud/OneDrive
+    Simple direct method to load Excel from Excel Cloud
     """
     try:
-        # Get share link from Streamlit secrets
-        share_link = st.secrets.get("excel_cloud", {}).get("share_link", "")
+        # Get the share link - FIRST try secrets, then use hardcoded as fallback
+        share_link = ""
+        
+        # Method 1: Try to get from secrets.toml
+        try:
+            share_link = st.secrets.get("excel_cloud", {}).get("share_link", "")
+        except:
+            pass
+        
+        # Method 2: If secrets not found, use the hardcoded link
+        if not share_link:
+            share_link = EXCEL_CLOUD_SHARE_LINK
+            st.info("📝 Using hardcoded Excel Cloud link")
         
         if not share_link:
-            st.error("❌ Excel Cloud share link not configured. Add to secrets.toml")
+            st.error("❌ No Excel Cloud link found")
             return None
         
-        # Convert 1drv.ms link to direct download link
-        # Method that works for your link format
-        if "1drv.ms" in share_link:
-            # Simple conversion: replace 1drv.ms with onedrive.live.com
-            direct_link = share_link.replace("1drv.ms", "onedrive.live.com")
-            
-            # Ensure we have download parameter
-            if "download=1" not in direct_link:
-                if "?" in direct_link:
-                    direct_link += "&download=1"
-                else:
-                    direct_link += "?download=1"
-        else:
-            direct_link = share_link
+        st.info(f"🔗 Excel Cloud link: {share_link[:50]}...")
         
-        # Download the file
+        # Convert the share link for direct download
+        # Simple conversion that should work
+        if "1drv.ms" in share_link:
+            # Convert to direct download format
+            download_link = share_link.replace("1drv.ms", "onedrive.live.com")
+            
+            # Make sure we have download parameter
+            if "download=1" not in download_link:
+                if "?" in download_link:
+                    download_link += "&download=1"
+                else:
+                    download_link += "?download=1"
+        else:
+            download_link = share_link
+        
+        # Try to download
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*"
         }
         
-        response = requests.get(direct_link, headers=headers, timeout=30, allow_redirects=True)
+        with st.spinner("Downloading Excel template..."):
+            response = requests.get(download_link, headers=headers, timeout=30, allow_redirects=True)
         
         if response.status_code == 200:
             content = response.content
             
-            # Check if it's an Excel file
-            if len(content) > 1000:  # Minimum reasonable size for Excel
-                # Check for .xlsx (ZIP) or .xls signature
+            # Check if it's a valid Excel file
+            if len(content) > 1000:  # Reasonable minimum for Excel
+                # Check for Excel signatures
                 if content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0'):
+                    st.success(f"✅ Downloaded Excel file ({len(content)} bytes)")
                     return content
                 else:
                     # Check if it's HTML (error page)
-                    content_str = content[:500].decode('utf-8', errors='ignore')
-                    if '<html' in content_str.lower() or '<!doctype' in content_str.lower():
-                        st.error("❌ Got HTML error page instead of Excel file.")
-                        st.error("Please check that the file is shared correctly in Excel Cloud.")
-                    else:
+                    try:
+                        text_start = content[:200].decode('utf-8', errors='ignore').lower()
+                        if '<html' in text_start or '<!doctype' in text_start:
+                            st.error("❌ Got HTML page instead of Excel. Link may require authentication.")
+                            # Try one more method
+                            return try_alternative_download(share_link)
+                        else:
+                            st.error(f"❌ Not a valid Excel file. First bytes: {content[:20].hex()}")
+                    except:
                         st.error(f"❌ Not a valid Excel file. Size: {len(content)} bytes")
             else:
-                st.error(f"❌ File too small: {len(content)} bytes")
+                st.error(f"❌ File too small ({len(content)} bytes)")
         else:
-            st.error(f"❌ Failed to download from Excel Cloud (HTTP {response.status_code})")
+            st.error(f"❌ Download failed (HTTP {response.status_code})")
+            # Try alternative method
+            return try_alternative_download(share_link)
             
         return None
         
     except Exception as e:
-        st.error(f"❌ Error loading from Excel Cloud: {str(e)}")
+        st.error(f"❌ Error: {str(e)}")
+        return None
+
+def try_alternative_download(share_link):
+    """Try alternative download method"""
+    try:
+        st.info("Trying alternative download method...")
+        
+        # Alternative: Use the share link with embed parameter
+        alt_link = share_link
+        
+        if "?e=" in alt_link:
+            # Try replacing the email parameter
+            alt_link = alt_link.replace("?e=", "?download=1&e=")
+        else:
+            # Just add download parameter
+            alt_link += "&download=1" if "?" in alt_link else "?download=1"
+        
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(alt_link, headers=headers, timeout=20, allow_redirects=True)
+        
+        if response.status_code == 200 and len(response.content) > 1000:
+            if response.content.startswith(b'PK') or response.content.startswith(b'\xD0\xCF\x11\xE0'):
+                st.success("✅ Alternative method worked!")
+                return response.content
+        
+        st.error("❌ Alternative method also failed")
+        return None
+        
+    except Exception as e:
+        st.error(f"❌ Alternative method error: {str(e)}")
         return None
 
 # =========================
@@ -529,6 +587,19 @@ def main():
     st.title("📄 PDF → Excel (Brønnøysund)")
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
+    
+    # Debug info in sidebar
+    with st.sidebar:
+        st.markdown("### 🔧 Debug Info")
+        if st.button("Test Excel Cloud Connection"):
+            st.info(f"Share link: {EXCEL_CLOUD_SHARE_LINK[:60]}...")
+            try:
+                test_response = requests.get(EXCEL_CLOUD_SHARE_LINK, timeout=10)
+                st.write(f"Test response: HTTP {test_response.status_code}")
+                st.write(f"Redirected to: {test_response.url}")
+            except Exception as e:
+                st.error(f"Test error: {str(e)}")
+    
     c1,c2 = st.columns(2)
     with c1:
         pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf")
@@ -557,7 +628,6 @@ def main():
     # =========================
     if 'template_loaded' not in st.session_state:
         with st.spinner("📥 Laster Excel-mal fra Excel Cloud..."):
-            # ONLY get from Excel Cloud
             tb = load_template_from_excel_cloud()
             
             if tb:
@@ -567,13 +637,12 @@ def main():
             else:
                 st.session_state.template_loaded = False
                 st.error("""
-                ❌ Kunne ikke laste Excel-mal fra Excel Cloud
+                ❌ Kunne ikke laste Excel-mal
                 
-                **Feilsøking:**
-                1. Sjekk at Excel-filen er delt riktig i Excel Cloud
-                2. Klikk "Del" → "Alle med linken kan vise" → Kopier link
-                3. Sjekk at linken i secrets.toml er korrekt
-                4. Prøv å åpne linken i en privat nettleservindu
+                **Løsning:**
+                1. Åpne Excel-filen i Excel Cloud
+                2. Klikk "Lagre en kopi" og last den ned
+                3. Last opp den nedlastede filen her som en midlertidig løsning
                 """)
     
     st.markdown("---")
