@@ -5,11 +5,11 @@ import requests
 import wikipedia
 import streamlit as st
 import pandas as pd
+import pdfplumber
 from io import BytesIO
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
-import pdfplumber
 from bs4 import BeautifulSoup
 
 # =========================
@@ -459,113 +459,68 @@ def extract_fields_from_pdf_bytes(pdf_bytes):
     return fields
 
 # =========================
-# EXCEL CLOUD TEMPLATE LOADER
+# EXCEL CLOUD TEMPLATE LOADER - WORKING VERSION
 # =========================
 def load_template_from_excel_cloud():
     """
-    Load Excel template ONLY from Excel Cloud/Microsoft 365
-    No GitHub fallback, no local file fallback
+    Load Excel template directly from Excel Cloud/OneDrive
     """
     try:
         # Get share link from Streamlit secrets
-        share_link = st.secrets.get("excel_cloud", {}).get("https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?e=ccyPnQ", "")
+        share_link = st.secrets.get("excel_cloud", {}).get("share_link", "")
         
         if not share_link:
-            st.error("❌ Excel Cloud share link not configured. Add to secrets.toml as [excel_cloud] share_link = 'your-link'")
+            st.error("❌ Excel Cloud share link not configured. Add to secrets.toml")
             return None
         
-        st.info(f"🔗 Using share link: {share_link[:80]}...")
+        # Convert 1drv.ms link to direct download link
+        # Method that works for your link format
+        if "1drv.ms" in share_link:
+            # Simple conversion: replace 1drv.ms with onedrive.live.com
+            direct_link = share_link.replace("1drv.ms", "onedrive.live.com")
+            
+            # Ensure we have download parameter
+            if "download=1" not in direct_link:
+                if "?" in direct_link:
+                    direct_link += "&download=1"
+                else:
+                    direct_link += "?download=1"
+        else:
+            direct_link = share_link
         
-        # Convert the share link to a direct download link
-        direct_link = convert_excel_cloud_link(share_link)
-        
-        if not direct_link:
-            st.error("❌ Could not convert share link to direct download link")
-            return None
-        
-        st.info(f"⬇️ Direct download link: {direct_link[:80]}...")
-        
-        # Download from Excel Cloud
+        # Download the file
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
-        response = requests.get(direct_link, headers=headers, timeout=30)
+        response = requests.get(direct_link, headers=headers, timeout=30, allow_redirects=True)
         
         if response.status_code == 200:
             content = response.content
-            # Verify it's a valid Excel file (check for ZIP header or Excel signature)
-            if content[:4] == b'PK\x03\x04':  # .xlsx files
-                st.success(f"✅ Successfully loaded Excel file ({len(content)} bytes)")
-                return content
-            elif content[:8] == b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1':  # .xls files
-                st.success(f"✅ Successfully loaded Excel file (.xls format, {len(content)} bytes)")
-                return content
+            
+            # Check if it's an Excel file
+            if len(content) > 1000:  # Minimum reasonable size for Excel
+                # Check for .xlsx (ZIP) or .xls signature
+                if content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0'):
+                    return content
+                else:
+                    # Check if it's HTML (error page)
+                    content_str = content[:500].decode('utf-8', errors='ignore')
+                    if '<html' in content_str.lower() or '<!doctype' in content_str.lower():
+                        st.error("❌ Got HTML error page instead of Excel file.")
+                        st.error("Please check that the file is shared correctly in Excel Cloud.")
+                    else:
+                        st.error(f"❌ Not a valid Excel file. Size: {len(content)} bytes")
             else:
-                st.error(f"❌ File from Excel Cloud is not a valid Excel file. First bytes: {content[:20].hex()}")
-                # Try to save for debugging
-                try:
-                    with open("debug_download.bin", "wb") as f:
-                        f.write(content[:1000])
-                    st.error("Saved first 1000 bytes to debug_download.bin for inspection")
-                except:
-                    pass
-                return None
+                st.error(f"❌ File too small: {len(content)} bytes")
         else:
             st.error(f"❌ Failed to download from Excel Cloud (HTTP {response.status_code})")
-            st.error(f"Response headers: {dict(response.headers)}")
-            return None
             
+        return None
+        
     except Exception as e:
-        st.error(f"❌ Error fetching template from Excel Cloud: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
+        st.error(f"❌ Error loading from Excel Cloud: {str(e)}")
         return None
-
-def convert_excel_cloud_link(share_link):
-    """
-    Convert various Excel Cloud/OneDrive share links to direct download links
-    Handles different link formats
-    """
-    if not share_link:
-        return None
-    
-    # Your specific link format: https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?e=ccyPnQ
-    if "1drv.ms/x/c/" in share_link:
-        # This is a OneDrive sharing link, convert to direct download
-        # Extract the share token
-        import base64
-        import urllib.parse
-        
-        # The format is: https://1drv.ms/x/c/{base64_encoded_sharing_token}?e={something}
-        parts = share_link.split('/')
-        if len(parts) >= 6:
-            share_token = parts[5]  # The IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc part
-            
-            # URL encode the share token
-            encoded_token = urllib.parse.quote(share_token)
-            
-            # Create direct download link
-            direct_link = f"https://api.onedrive.com/v1.0/shares/u!{encoded_token}/root/content"
-            return direct_link
-    
-    # Alternative conversion method for 1drv.ms links
-    if "1drv.ms" in share_link:
-        # Try the simpler conversion first
-        simple_link = share_link.replace("1drv.ms", "onedrive.live.com")
-        
-        # Add download parameter if not present
-        if "download" not in simple_link:
-            if "?" in simple_link:
-                simple_link += "&download=1"
-            else:
-                simple_link += "?download=1"
-        
-        return simple_link
-    
-    # If it's already a direct link or we don't recognize the format, return as-is
-    return share_link
 
 # =========================
 # UI
@@ -598,11 +553,11 @@ def main():
     st.markdown("---")
     
     # =========================
-    # EXCEL CLOUD TEMPLATE LOADING (REPLACED SECTION)
+    # EXCEL CLOUD TEMPLATE LOADING
     # =========================
     if 'template_loaded' not in st.session_state:
         with st.spinner("📥 Laster Excel-mal fra Excel Cloud..."):
-            # ONLY get from Excel Cloud - no GitHub, no local fallback
+            # ONLY get from Excel Cloud
             tb = load_template_from_excel_cloud()
             
             if tb:
@@ -616,9 +571,9 @@ def main():
                 
                 **Feilsøking:**
                 1. Sjekk at Excel-filen er delt riktig i Excel Cloud
-                2. Sjekk at linken i secrets.toml er korrekt
-                3. Forsikre deg om at filen er tilgjengelig uten innlogging
-                4. Kopier linken ved å klikke "Del" → "Alle med linken kan vise" → Kopier link
+                2. Klikk "Del" → "Alle med linken kan vise" → Kopier link
+                3. Sjekk at linken i secrets.toml er korrekt
+                4. Prøv å åpne linken i en privat nettleservindu
                 """)
     
     st.markdown("---")
