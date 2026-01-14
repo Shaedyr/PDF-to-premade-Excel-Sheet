@@ -177,9 +177,12 @@ def get_company_details(company: dict):
 # =========================
 # EXCEL TEMPLATE HANDLING (updated)
 # - Do NOT rename sheets (user requested)
-# - Detect fillable cells by identifying the light-gray fill (and excluding green headers)
+# - Detect fillable cells by exact RGB match to F2F2F2 (only those will be filled)
+# - Fill Brønnøysund-derived data on the FIRST sheet only
 # - Provide debug listing of detected cells so you can confirm detection
 # =========================
+
+TARGET_FILL_HEX = "F2F2F2"  # cells to fill must have this exact color
 
 def load_template_from_github():
     try:
@@ -198,84 +201,38 @@ def load_template_from_github():
         return None
 
 
-def _rgb_from_color(col):
+def _rgb_hex_from_color(col):
     """
-    Given an openpyxl Color object, try to extract an (R, G, B) tuple (0-255).
-    Returns None if not available.
+    Given an openpyxl Color object, try to return a 6-char hex string like 'F2F2F2', or None.
+    Handles 'FF' alpha prefix.
     """
     try:
         if not col:
             return None
         rgb = getattr(col, "rgb", None)
-        # sometimes colors come prefixed with alpha 'FF' => length 8
         if rgb:
             rgb = rgb.upper()
-            if len(rgb) == 8:
+            if len(rgb) == 8:  # possibly 'FFRRGGBB'
                 rgb = rgb[2:]
             if len(rgb) == 6:
-                r = int(rgb[0:2], 16)
-                g = int(rgb[2:4], 16)
-                b = int(rgb[4:6], 16)
-                return (r, g, b)
-        # fallbacks: indexed/theme are hard to resolve reliably without the workbook theme;
-        # we will return None and let heuristics ignore them (or consider them later)
+                return rgb
+        # other color types (theme/indexed) we do not resolve -> None
         return None
     except Exception:
         return None
 
 
-def _is_header_green(rgb):
-    """Heuristic: treat strongly greenish colors as header (do not touch)."""
-    if not rgb:
-        return False
-    r, g, b = rgb
-    # Green if G is substantially larger than R and B
-    if g > r * 1.25 and g > b * 1.25 and g > 90:
-        return True
-    return False
-
-
-def _is_light_gray(rgb):
-    """Heuristic: detect near-white light gray (cells to fill)."""
-    if not rgb:
-        return False
-    r, g, b = rgb
-    # near-equal RGB and relatively bright => gray
-    if abs(r - g) <= 16 and abs(r - b) <= 16:
-        # compute luminance (0..1)
-        lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
-        # light gray range - tune if needed
-        if 0.8 <= lum <= 0.98:
-            return True
-    return False
-
-
 def _is_fillable(cell):
     """
-    Determine if a cell is designated for app-fill.
-    Rules:
-      - We only fill light-gray cells (the user's 'fillable' cells).
-      - We explicitly exclude green header cells.
-      - Try to read fgColor / start_color RGB values and apply heuristics.
-      - If color cannot be resolved to RGB, conservatively return False (avoid overwriting).
+    Only treat a cell as fillable when its fill color exactly matches TARGET_FILL_HEX.
+    Conservative: if color cannot be resolved, we do NOT fill.
     """
     try:
         f = cell.fill
-        # Try fgColor then start_color
         fg = getattr(f, "fgColor", None) or getattr(f, "start_color", None)
-        rgb = _rgb_from_color(fg)
-        # If we resolved RGB, use heuristics
-        if rgb:
-            if _is_header_green(rgb):
-                return False
-            if _is_light_gray(rgb):
-                return True
-            return False
-        # If no explicit RGB available, try to use patternType as fallback (conservative)
-        pt = getattr(f, "patternType", None)
-        if pt and pt.lower() == "solid":
-            # but don't auto-fill unless we can be confident - return False
-            return False
+        hexcol = _rgb_hex_from_color(fg)
+        if hexcol and hexcol.upper() == TARGET_FILL_HEX:
+            return True
         return False
     except Exception:
         return False
@@ -312,11 +269,11 @@ def _match_field_by_label(label_text):
 
 def scan_and_map_fill_cells(wb_bytes):
     """
-    Scan each sheet for fillable cells and attempt to map them to known data fields
-    by looking at the left cell or the cell above for a label. Returns:
+    Scan the workbook for cells with the exact target fill color.
+    Returns:
       - mapping: { sheetname: { field_name: (cell_coordinate, current_value) } }
-      - unmatched_cells: [ (sheetname, coord, label_nearby) ]  # for manual inspection/warnings
-      - detected_cells_debug: list of (sheet, coord, rgb_hex_or_none, is_fillable_bool, label)
+      - unmatched_cells: [ (sheetname, coord, label_nearby) ]
+      - debug_cells: list of (sheet, coord, hex or None, is_fillable_bool, near_label)
     """
     mapping = {}
     unmatched = []
@@ -327,33 +284,22 @@ def scan_and_map_fill_cells(wb_bytes):
         for row in ws.iter_rows():
             for cell in row:
                 try:
-                    rgb = None
-                    f = cell.fill
-                    fg = getattr(f, "fgColor", None) or getattr(f, "start_color", None)
-                    rgb_tuple = _rgb_from_color(fg)
-                    rgb_hex = None
-                    if rgb_tuple:
-                        rgb_hex = '{:02X}{:02X}{:02X}'.format(*rgb_tuple)
+                    fg = getattr(cell.fill, "fgColor", None) or getattr(cell.fill, "start_color", None)
+                    hexcol = _rgb_hex_from_color(fg)
                     is_fill = _is_fillable(cell)
-                    # look for label near the cell
+                    # find nearby label (left or above)
                     label = ""
-                    try:
-                        if cell.column > 1:
-                            left = ws.cell(row=cell.row, column=cell.column - 1).value
-                            if left:
-                                label = str(left)
-                    except Exception:
-                        label = ""
-                    if not label:
-                        try:
-                            above = ws.cell(row=cell.row - 1, column=cell.column).value if cell.row > 1 else None
-                            if above:
-                                label = str(above)
-                        except Exception:
-                            label = ""
+                    if cell.column > 1:
+                        left = ws.cell(row=cell.row, column=cell.column - 1).value
+                        if left:
+                            label = str(left)
+                    if not label and cell.row > 1:
+                        above = ws.cell(row=cell.row - 1, column=cell.column).value
+                        if above:
+                            label = str(above)
                     combined = " ".join(filter(None, [label, str(ws.cell(row=cell.row - 1, column=cell.column).value or "")]))
                     field = _match_field_by_label(label) or _match_field_by_label(combined)
-                    debug_cells.append((ws.title, cell.coordinate, rgb_hex, is_fill, label))
+                    debug_cells.append((ws.title, cell.coordinate, hexcol, is_fill, label))
                     if is_fill:
                         if field:
                             smap[field] = (ws.title, cell.coordinate, cell.value)
@@ -368,52 +314,73 @@ def scan_and_map_fill_cells(wb_bytes):
 
 def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
     """
-    Fill mapped cells based on scanning for fillable cells and labels.
-    Returns (filled_bytes, report) where report contains details and errors.
+    Fill mapped cells, but only on the FIRST sheet for Brønnøysund-derived data.
+    Returns (filled_bytes, report).
     """
     report = {"filled": [], "skipped": [], "errors": [], "unmapped_cells": [], "debug_cells": []}
-    wb = load_workbook(BytesIO(template_bytes))
-    # scan mapping and unmatched
+    wb_scan = load_workbook(BytesIO(template_bytes), data_only=False)
+    sheet_names = wb_scan.sheetnames
+    first_sheet_name = sheet_names[0] if sheet_names else None
+
+    # scan mapping/unmatched/debug for whole workbook (for debug), but we will fill only first sheet
     mapping, unmatched, debug_cells = scan_and_map_fill_cells(template_bytes)
-    report["unmapped_cells"] = unmatched
     report["debug_cells"] = debug_cells
 
-    # Attempt filling matched fields first
-    for sheet_name, fields in mapping.items():
-        ws = wb[sheet_name]
-        for field_name, (sname, coord, current) in fields.items():
+    # Only consider mapping on the first sheet for actual filling
+    first_map = mapping.get(first_sheet_name, {}) if first_sheet_name else {}
+
+    # Prepare workbook to write
+    wb = load_workbook(BytesIO(template_bytes))
+    if not first_sheet_name:
+        report["errors"].append(("NO_SHEET", None, "No sheets found in template"))
+        return template_bytes, report
+    ws = wb[first_sheet_name]
+
+    # Fill fields that have a mapped cell on the first sheet
+    for field_name, value in field_values.items():
+        if field_name in first_map:
+            coord = first_map[field_name][1]
             try:
-                if field_name in field_values and field_values[field_name] not in (None, ""):
-                    ws[coord].value = str(field_values[field_name])
-                    report["filled"].append((sheet_name, coord, field_name))
+                if value not in (None, ""):
+                    ws[coord].value = str(value)
+                    report["filled"].append((first_sheet_name, coord, field_name))
                 else:
-                    report["skipped"].append((sheet_name, coord, field_name, "No value found for this field"))
+                    report["skipped"].append((first_sheet_name, coord, field_name, "No value provided"))
             except Exception as e:
-                report["errors"].append((sheet_name, coord, field_name, str(e)))
+                report["errors"].append((first_sheet_name, coord, field_name, str(e)))
+        else:
+            # Not mapped on first sheet; skip for now (per user: fill on first sheet)
+            report["skipped"].append((first_sheet_name, None, field_name, "No mapped cell on first sheet"))
 
-    # If there are unmatched fillable cells, attempt to fill remaining fields in order
-    remaining_fields = {k: v for k, v in field_values.items() if v not in (None, "")}
-    # Remove those already filled
-    for _, _, f in report["filled"]:
-        remaining_fields.pop(f, None)
+    # For unmatched fillable cells on the first sheet, try to auto-fill remaining values (if any)
+    remaining = {k: v for k, v in field_values.items() if v not in (None, "")}
+    for _, _, f, *rest in report["filled"]:
+        # remove filled fields
+        remaining.pop(f, None)
 
-    if unmatched and remaining_fields:
-        # fill unmatched cells in order of appearance with remaining fields
-        for (sheet_name, coord, label) in unmatched:
-            if not remaining_fields:
-                break
-            ws = wb[sheet_name]
-            field_name, value = remaining_fields.popitem()
-            try:
-                ws[coord].value = str(value)
-                report["filled"].append((sheet_name, coord, field_name, "auto-mapped"))
-            except Exception as e:
-                report["errors"].append((sheet_name, coord, field_name, str(e)))
+    if unmatched:
+        # filter unmatched to first sheet only
+        unmatched_first = [t for t in unmatched if t[0] == first_sheet_name]
+        if unmatched_first and remaining:
+            # fill unmatched first-sheet cells in insertion order with remaining fields
+            for (sheetname, coord, label) in unmatched_first:
+                if not remaining:
+                    break
+                field_name, val = remaining.popitem()
+                try:
+                    wb[sheetname][coord].value = str(val)
+                    report["filled"].append((sheetname, coord, field_name, "auto-mapped"))
+                except Exception as e:
+                    report["errors"].append((sheetname, coord, field_name, str(e)))
+        else:
+            # nothing to auto-map or no remaining values
+            pass
 
-    # Prepare final bytes
+    # Save workbook
     out = BytesIO()
     wb.save(out)
     out.seek(0)
+    report["unmapped_cells"] = [u for u in unmatched if u[0] == first_sheet_name]
     return out.getvalue(), report
 
 
@@ -518,7 +485,7 @@ def format_brreg_data(api_data):
 # =========================
 # STREAMLIT UI (unchanged layout)
 # - UI kept same per user request
-# - Added detection debug and improved fill detection
+# - Now fills FIRST sheet only and only cells with color F2F2F2
 # =========================
 def main():
     st.title("📄 PDF → Excel (Brønnøysund)")
@@ -610,8 +577,20 @@ def main():
                 info["sheet_title"] = ws.title
                 info["merged_ranges"] = [str(r) for r in ws.merged_cells.ranges]
                 info["A2"] = (ws["A2"].value or "")[:1000]
-                for addr in ["B14", "B15", "B16", "B17", "B18", "B20", "B21"]:
-                    info[addr] = ws[addr].value
+                # show detected fillable cells (by inspecting fills)
+                dbg_map = []
+                wb_full = load_workbook(BytesIO(uploaded_xlsx.read()), data_only=False)
+                for w in wb_full.worksheets:
+                    for row in w.iter_rows():
+                        for c in row:
+                            try:
+                                fg = getattr(c.fill, "fgColor", None) or getattr(c.fill, "start_color", None)
+                                hexcol = _rgb_hex_from_color(fg)
+                                if hexcol:
+                                    dbg_map.append((w.title, c.coordinate, hexcol, True if hexcol.upper() == TARGET_FILL_HEX else False))
+                            except Exception:
+                                continue
+                info["detected_colors_sample"] = dbg_map[:200]
                 st.json(info)
             except Exception as e:
                 st.error(f"Kunne ikke lese filen: {e}")
@@ -629,13 +608,27 @@ def main():
                     info["sheet_title"] = ws.title
                     info["merged_ranges"] = [str(r) for r in ws.merged_cells.ranges]
                     info["A2"] = (ws["A2"].value or "")[:1000]
+                    # show colors sample for first sheet
+                    wb_full = load_workbook(BytesIO(tb), data_only=False)
+                    dbg_map = []
+                    w = wb_full.worksheets[0]
+                    for row in w.iter_rows():
+                        for c in row:
+                            try:
+                                fg = getattr(c.fill, "fgColor", None) or getattr(c.fill, "start_color", None)
+                                hexcol = _rgb_hex_from_color(fg)
+                                if hexcol:
+                                    dbg_map.append((w.title, c.coordinate, hexcol, True if hexcol.upper() == TARGET_FILL_HEX else False))
+                            except Exception:
+                                continue
+                    info["first_sheet_color_sample"] = dbg_map[:200]
                     st.json(info)
                 except Exception as e:
                     st.error(f"Feil ved inspeksjon av mal: {e}")
 
     st.markdown("---")
 
-    # Processing button: now uses PDF scanning and template scanning + mapping
+    # Processing button: now uses PDF scanning and template scanning + mapping (fills first sheet only)
     if st.button("🚀 Prosesser & Oppdater Excel", use_container_width=True):
         # Ensure template loaded
         if not st.session_state.get('template_loaded'):
@@ -659,12 +652,14 @@ def main():
                     br = fetch_brreg_by_org(extracted["org_number"])
                     if br:
                         br_data = format_brreg_data(br)
-                        # give priority to brreg data, but preserve explicit PDF-found fields if brreg lacks them
+                        # Brreg data takes precedence
                         for k, v in br_data.items():
                             if v:
                                 field_values[k] = v
-                        # overlay PDF provided fields (some may be more specific)
-                        field_values.update({k: v for k, v in extracted.items() if v})
+                        # overlay PDF provided fields where useful
+                        for k, v in extracted.items():
+                            if v:
+                                field_values[k] = v
                     else:
                         field_values.update(extracted)
                 else:
@@ -680,7 +675,7 @@ def main():
 
         st.session_state.extracted_data = field_values
 
-        # 3) Fill the workbook by scanning fillable cells and mapping labels
+        # 3) Fill the workbook by scanning fillable cells and mapping labels (first sheet only)
         try:
             updated_bytes, report = fill_workbook_bytes(st.session_state.template_bytes, field_values)
             st.session_state.excel_bytes = updated_bytes
@@ -690,17 +685,17 @@ def main():
                 for err in report["errors"]:
                     st.write(f"Feil: {err}")
             if report["skipped"]:
-                st.warning("Noen felter manglet verdi og ble hoppet over:")
+                st.warning("Noen felter ble hoppet over (ingen mapping eller verdi):")
                 for s in report["skipped"]:
                     st.write(f"{s}")
             if report["unmapped_cells"]:
-                st.info("Noen fylleceller kunne ikke matches til feltnavn (ble forsøkt auto-mappet):")
+                st.info("Fylleceller på første ark uten entydig label (kan være auto-mappet):")
                 for um in report["unmapped_cells"]:
                     st.write(f"{um}")
             if report["filled"]:
-                st.success(f"✅ Fylte {len(report['filled'])} celler i malen.")
+                st.success(f"✅ Fylte {len(report['filled'])} celler i første arket.")
             else:
-                st.warning("Kunne ikke fylle noen celler — sjekk malen og feltene.")
+                st.warning("Kunne ikke fylle noen celler på første arket — sjekk malen og feltene.")
             # Show detection debug so you can verify which cells were considered fillable vs headers
             if report.get("debug_cells"):
                 st.markdown("**Oppdagede celler (debug)**")
