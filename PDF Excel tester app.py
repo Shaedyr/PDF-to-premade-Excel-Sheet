@@ -31,36 +31,71 @@ def _strip_suffix(name: str):
     return re.sub(r'\b(AS|ASA|ANS|DA|ENK|KS|BA)\b\.?$', '', (name or ''), flags=re.I).strip()
 
 
-def _wiki_summary(name: str):
+def _wiki_summary(name: str, prefer_name: str = None):
+    """
+    Try to get a company-like summary from Wikipedia, preferring pages that
+    mention the company name or contain company indicators.
+    - prefer_name: normalized name used to bias selection (optional)
+    Returns short summary string or None.
+    """
     if not name:
         return None
-    base = _strip_suffix(name)
-    attempts = [base, name, base + " (bedrift)", base + " (company)"]
-    for lang in ("no", "en"):
+    base = _strip_suffix(name).strip()
+    prefer = (prefer_name or base).strip()
+    attempts = [name, base, base + " (bedrift)", base + " (company)"]
+    tried = set()
+    candidates = []
+    for a in attempts:
         try:
-            wikipedia.set_lang(lang)
+            results = wikipedia.search(a)
         except Exception:
-            pass
-        for a in attempts:
-            try:
-                results = wikipedia.search(a)
-                if not results:
-                    continue
-                target = next((r for r in results[:5] if any(
-                    w in r.lower() for w in ("as", "asa", "bedrift", "selskap", "company", "group"))), results[0])
-                page = wikipedia.page(target, auto_suggest=False)
-                s = page.summary or ""
+            results = []
+        for r in results[:10]:
+            if r not in tried:
+                tried.add(r)
+                candidates.append(r)
+
+    def candidate_score(page_title: str, summary_text: str):
+        t = (page_title or "").lower()
+        s = (summary_text or "").lower()
+        score = 0
+        if prefer and prefer.lower() in t:
+            score += 50
+        if prefer and prefer.lower() in s:
+            score += 20
+        for kw in ("as", "asa", "bedrift", "selskap", "company", "firma", "group"):
+            if kw in t or kw in s:
+                score += 10
+        if len(s) > 80:
+            score += 2
+        return score
+
+    best_summary = None
+    best_score = -1
+    for cand in candidates:
+        try:
+            page = wikipedia.page(cand, auto_suggest=False)
+            s = page.summary or ""
+            sc = candidate_score(page.title, s)
+            if sc >= 60:
                 sent = [x.strip() for x in s.split('. ') if x.strip()]
                 if len(sent) > 2:
                     return '. '.join(sent[:2]) + '.'
-                short = s[:300] + '...' if len(s) > 300 else s
-                return short if lang == "no" else short.replace(" is a ", " er et ").replace(" company",
-                                                                                             " selskap").replace(
-                    " based in ", " med hovedkontor i ")
-            except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
-                continue
-            except Exception:
-                continue
+                return s[:300] + '...' if len(s) > 300 else s
+            if sc > best_score and s:
+                best_score = sc
+                best_summary = s
+        except (wikipedia.exceptions.DisambiguationError, wikipedia.exceptions.PageError):
+            continue
+        except Exception:
+            continue
+
+    if best_summary and best_score >= 15:
+        sent = [x.strip() for x in best_summary.split('. ') if x.strip()]
+        if len(sent) > 2:
+            return '. '.join(sent[:2]) + '.'
+        return best_summary[:300] + '...' if len(best_summary) > 300 else best_summary
+
     return None
 
 
@@ -778,21 +813,25 @@ def main():
             st.error("❌ Ingen selskapsdata funnet. Velg et selskap fra listen eller last opp en PDF som inneholder selskapets informasjon.")
             st.stop()
 
-        # --- Ensure we have a company summary (wiki -> web -> brreg fallback) ---
+        # --- Ensure we have a company summary (prefer Brønnøysund -> wiki (strict) -> web -> brreg fallback) ---
         company_summary = None
-        if st.session_state.get("company_summary"):
-            company_summary = st.session_state.company_summary
+        brreg_like = st.session_state.get("selected_company_data") or {}
+        if brreg_like:
+            try:
+                company_summary = create_summary_from_brreg_data(brreg_like)
+            except Exception:
+                company_summary = None
 
-        if not company_summary:
-            company_name = field_values.get("company_name") or ""
+        if not company_summary or (isinstance(company_summary, str) and len(company_summary) < 40):
+            company_name = field_values.get("company_name", "") or ""
             if company_name:
                 with st.spinner("Henter sammendrag fra Wikipedia..."):
                     try:
-                        company_summary = _wiki_summary(company_name)
+                        company_summary = _wiki_summary(company_name, prefer_name=company_name)
                     except Exception:
                         company_summary = None
 
-        if not company_summary:
+        if not company_summary or (isinstance(company_summary, str) and len(company_summary) < 40):
             try:
                 with st.spinner("Søker etter kort info på nettet..."):
                     company_summary = _web_summary(field_values.get("company_name", "") or field_values.get("org_number", ""))
@@ -838,7 +877,9 @@ def main():
                 st.dataframe(df_dbg)
             if report.get("mapping"):
                 st.markdown("**Brukt mapping (første ark hvis relevant)**")
-                st.write(report["mapping"].get(list(report["mapping"].keys())[0]) if report["mapping"] else {})
+                # print only first sheet mapping for readability
+                first_map_key = list(report["mapping"].keys())[0] if report["mapping"] else None
+                st.write(report["mapping"].get(first_map_key) if first_map_key else {})
             st.session_state.excel_ready = True
         except Exception as e:
             st.error(f"❌ Feil ved utfylling av Excel: {e}")
