@@ -273,19 +273,36 @@ def _match_field_by_label(label_text):
     return None
 
 
+# --------- REPLACE scan_and_map_fill_cells WITH THIS ----------
 def scan_and_map_fill_cells(wb_bytes):
+    """
+    Two-pass mapping:
+    1) Find all fillable cells (exact F2F2F2).
+    2) For each fillable cell try local label matching (left/above/right/below, diags).
+    3) For remaining unmapped fields, search whole sheet for label keywords and assign
+       nearest unassigned fillable cell.
+    Returns mapping, unmatched, debug_cells
+      - mapping: { sheetname: { field_name: (cell_coordinate, assigned_by, label_text) } }
+      - unmatched: list of (sheetname, coord, nearby_label)
+      - debug_cells: list of (sheet, coord, hex, is_fillable, nearby_label)
+    """
     mapping = {}
     unmatched = []
     debug_cells = []
+
     wb = load_workbook(BytesIO(wb_bytes), data_only=False)
     for ws in wb.worksheets:
-        smap = {}
+        sheet_fillables = []  # list of (row, col, coord)
+        assigned = {}         # field -> (coord, assigned_by, label)
+        cell_by_coord = {}    # coord -> cell object for nearest calc
+        # collect fillable cells and debug info
         for row in ws.iter_rows():
             for cell in row:
                 try:
                     fg = getattr(cell.fill, "fgColor", None) or getattr(cell.fill, "start_color", None)
                     hexcol = _rgb_hex_from_color(fg)
                     is_fill = True if (hexcol and hexcol.upper() == TARGET_FILL_HEX) else False
+                    # nearby label attempt (simple left/above)
                     label = ""
                     if cell.column > 1:
                         left = ws.cell(row=cell.row, column=cell.column - 1).value
@@ -296,28 +313,140 @@ def scan_and_map_fill_cells(wb_bytes):
                         if above:
                             label = str(above)
                     combined = " ".join(filter(None, [label, str(ws.cell(row=cell.row - 1, column=cell.column).value or "")]))
-                    field = _match_field_by_label(label) or _match_field_by_label(combined)
                     debug_cells.append((ws.title, cell.coordinate, hexcol, is_fill, label))
                     if is_fill:
-                        if field:
-                            smap[field] = (ws.title, cell.coordinate, cell.value)
-                        else:
-                            unmatched.append((ws.title, cell.coordinate, label or None))
+                        sheet_fillables.append((cell.row, cell.column, cell.coordinate))
+                        cell_by_coord[cell.coordinate] = cell
                 except Exception:
                     continue
+
+        # local matching: for each fillable look around in a neighborhood for labels
+        for r, c, coord in sheet_fillables:
+            # build list of neighbor coords to probe in order of priority
+            neighbors = [
+                (r, c - 1), (r, c - 2),     # left, left2
+                (r - 1, c), (r - 2, c),     # above, above2
+                (r, c + 1), (r, c + 2),     # right, right2
+                (r + 1, c), (r + 2, c),     # below, below2
+                (r - 1, c - 1), (r - 1, c + 1), (r + 1, c - 1), (r + 1, c + 1)
+            ]
+            found_label = ""
+            found_field = None
+            for rr, cc in neighbors:
+                if rr < 1 or cc < 1:
+                    continue
+                try:
+                    val = ws.cell(row=rr, column=cc).value
+                    if val and str(val).strip():
+                        found_label = str(val)
+                        found_field = _match_field_by_label(found_label)
+                        if found_field:
+                            assigned[found_field] = (coord, "local", found_label)
+                            break
+                except Exception:
+                    continue
+
+        # global mapping for remaining fields: search sheet for label cells (keywords)
+        # precompute list of all candidate label cells with their normalized text
+        label_cells = []
+        for row in ws.iter_rows():
+            for cell in row:
+                try:
+                    txt = cell.value
+                    if txt and str(txt).strip():
+                        label_cells.append((cell.row, cell.column, cell.coordinate, str(txt)))
+                except Exception:
+                    continue
+
+        # for fields not yet assigned, find the best label cell and nearest unassigned fillable
+        all_fields = list(FIELD_KEYWORDS.keys())
+        unassigned_fields = [f for f in all_fields if f not in assigned]
+        # compute set of unassigned fillable coords
+        unassigned_fill_coords = [coord for (_r, _c, coord) in sheet_fillables]
+
+        def manhattan(r1, c1, r2, c2):
+            return abs(r1 - r2) + abs(c1 - c2)
+
+        for field in unassigned_fields:
+            # search label_cells for any that match the field keywords (normalized/fuzzy)
+            best_label_cell = None
+            best_label_score = 0.0
+            for rr, cc, coord_label, raw in label_cells:
+                lab = _normalize_label(raw)
+                # quick substring check
+                for kw in FIELD_KEYWORDS[field]:
+                    if kw in lab:
+                        # immediate strong match
+                        best_label_cell = (rr, cc, coord_label, raw)
+                        best_label_score = 1.0
+                        break
+                # otherwise fuzzy check
+                if best_label_cell is None:
+                    for kw in FIELD_KEYWORDS[field]:
+                        score = difflib.SequenceMatcher(None, lab, kw).ratio()
+                        if score > best_label_score:
+                            best_label_score = score
+                            best_label_cell = (rr, cc, coord_label, raw)
+            # accept if strong enough
+            if best_label_cell and best_label_score >= 0.55:
+                rr, cc, coord_label, raw = best_label_cell
+                # find nearest unassigned fillable cell
+                best_fill = None
+                best_dist = None
+                for (_r, _c, coord_fill) in sheet_fillables:
+                    if coord_fill not in unassigned_fill_coords:
+                        continue
+                    d = manhattan(rr, cc, _r, _c)
+                    if best_dist is None or d < best_dist:
+                        best_dist = d
+                        best_fill = coord_fill
+                if best_fill:
+                    assigned[field] = (best_fill, "global", raw)
+                    # mark that fill coord as assigned
+                    if best_fill in unassigned_fill_coords:
+                        unassigned_fill_coords.remove(best_fill)
+
+        # build mapping for sheet
+        smap = {}
+        for f, v in assigned.items():
+            smap[f] = v  # (coord, assigned_by, label)
+        # unmatched are fillables left without assignment
+        remaining_unmapped = [coord for coord in [t[2] for t in sheet_fillables] if coord not in [v[0] for v in assigned.values()]]
+        for coord_un in remaining_unmapped:
+            # find nearby label for info
+            lab = ""
+            r_cell = ws[coord_un].row
+            c_cell = ws[coord_un].column
+            if c_cell > 1:
+                left = ws.cell(row=r_cell, column=c_cell - 1).value
+                if left:
+                    lab = str(left)
+            if not lab and r_cell > 1:
+                above = ws.cell(row=r_cell - 1, column=c_cell).value
+                if above:
+                    lab = str(above)
+            unmatched.append((ws.title, coord_un, lab or None))
+
         if smap:
             mapping[ws.title] = smap
+
     return mapping, unmatched, debug_cells
 
 
 def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
-    report = {"filled": [], "skipped": [], "errors": [], "unmapped_cells": [], "debug_cells": []}
+    """
+    Fill using mapping produced by scan_and_map_fill_cells.
+    Writes only to the FIRST sheet (per your request).
+    Returns (filled_bytes, report) where report includes mapping, debug, errors, etc.
+    """
+    report = {"filled": [], "skipped": [], "errors": [], "unmapped_cells": [], "debug_cells": [], "mapping": {}}
     wb_scan = load_workbook(BytesIO(template_bytes), data_only=False)
     sheet_names = wb_scan.sheetnames
     first_sheet_name = sheet_names[0] if sheet_names else None
 
     mapping, unmatched, debug_cells = scan_and_map_fill_cells(template_bytes)
     report["debug_cells"] = debug_cells
+    report["mapping"] = mapping
 
     first_map = mapping.get(first_sheet_name, {}) if first_sheet_name else {}
 
@@ -327,9 +456,10 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         return template_bytes, report
     ws = wb[first_sheet_name]
 
+    # Fill fields with mapped coords on first sheet
     for field_name, value in field_values.items():
         if field_name in first_map:
-            coord = first_map[field_name][1]
+            coord = first_map[field_name][0]  # coord stored at index 0
             try:
                 if value not in (None, ""):
                     ws[coord].value = str(value)
@@ -341,12 +471,15 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         else:
             report["skipped"].append((first_sheet_name, None, field_name, "No mapped cell on first sheet"))
 
+    # Try to auto-map remaining values to unmatched fillable cells on first sheet
     remaining = {k: v for k, v in field_values.items() if v not in (None, "")}
-    for _, _, f in report["filled"]:
+    for (_s, _coord, f) in report["filled"]:
         remaining.pop(f, None)
 
+    # find unmatched fillable cells for first sheet
     unmatched_first = [t for t in unmatched if t[0] == first_sheet_name]
     if unmatched_first and remaining:
+        # assign remaining fields to those cells in arbitrary order
         for (sheetname, coord, label) in unmatched_first:
             if not remaining:
                 break
