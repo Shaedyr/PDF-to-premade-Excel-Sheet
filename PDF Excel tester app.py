@@ -465,91 +465,163 @@ def extract_fields_from_pdf_bytes(pdf_bytes):
     return fields
 
 # =========================
-# EXCEL CLOUD TEMPLATE LOADER - SIMPLE WORKING VERSION
+# EXCEL CLOUD TEMPLATE LOADER - FIXED VERSION
 # =========================
 def load_template_from_excel_cloud():
     """
-    Simple direct method to load Excel from Excel Cloud
+    Fixed version that extracts the actual download URL from the HTML page
     """
     try:
-        # Get the share link - FIRST try secrets, then use hardcoded as fallback
-        share_link = ""
+        # Your Excel Cloud share link
+        share_link = EXCEL_CLOUD_SHARE_LINK
         
-        # Method 1: Try to get from secrets.toml
-        try:
-            share_link = st.secrets.get("excel_cloud", {}).get("share_link", "")
-        except:
-            pass
+        st.info(f"📥 Laster fra Excel Cloud...")
         
-        # Method 2: If secrets not found, use the hardcoded link
-        if not share_link:
-            share_link = EXCEL_CLOUD_SHARE_LINK
-            st.info("📝 Using hardcoded Excel Cloud link")
-        
-        if not share_link:
-            st.error("❌ No Excel Cloud link found")
-            return None
-        
-        st.info(f"🔗 Excel Cloud link: {share_link[:50]}...")
-        
-        # Convert the share link for direct download
-        # Simple conversion that should work
-        if "1drv.ms" in share_link:
-            # Convert to direct download format
-            download_link = share_link.replace("1drv.ms", "onedrive.live.com")
-            
-            # Make sure we have download parameter
-            if "download=1" not in download_link:
-                if "?" in download_link:
-                    download_link += "&download=1"
-                else:
-                    download_link += "?download=1"
-        else:
-            download_link = share_link
-        
-        # Try to download
+        # Headers to mimic a browser
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
         }
         
-        with st.spinner("Downloading Excel template..."):
-            response = requests.get(download_link, headers=headers, timeout=30, allow_redirects=True)
+        # Step 1: Get the HTML page
+        response = requests.get(share_link, headers=headers, timeout=30, allow_redirects=True)
         
-        if response.status_code == 200:
-            content = response.content
+        if response.status_code != 200:
+            st.error(f"❌ Kan ikke nå Excel Cloud (HTTP {response.status_code})")
+            return None
+        
+        # Step 2: Parse the HTML to find the actual download link
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Look for download links - OneDrive typically has specific patterns
+        download_url = None
+        
+        # Pattern 1: Look for meta tags with download URLs
+        for meta in soup.find_all('meta'):
+            if 'content' in meta.attrs and 'download' in meta.get('content', '').lower():
+                content = meta['content']
+                if 'http' in content:
+                    download_url = content
+                    break
+        
+        # Pattern 2: Look for JSON data in script tags
+        if not download_url:
+            for script in soup.find_all('script'):
+                if script.string and 'downloadUrl' in script.string:
+                    import json
+                    import re
+                    # Try to extract JSON
+                    json_match = re.search(r'\{.*\}', script.string, re.DOTALL)
+                    if json_match:
+                        try:
+                            data = json.loads(json_match.group())
+                            if 'downloadUrl' in data:
+                                download_url = data['downloadUrl']
+                                break
+                        except:
+                            pass
+        
+        # Pattern 3: Look for direct download links
+        if not download_url:
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                if ('download.aspx' in href or 'download' in href.lower() or 
+                    '.xlsx' in href or 'onedrive.live.com/download' in href):
+                    if href.startswith('http'):
+                        download_url = href
+                        break
+                    elif href.startswith('/'):
+                        # Convert relative URL to absolute
+                        from urllib.parse import urljoin
+                        download_url = urljoin(response.url, href)
+                        break
+        
+        # Pattern 4: Extract from button onclick or data attributes
+        if not download_url:
+            for element in soup.find_all(['button', 'div', 'span']):
+                onclick = element.get('onclick', '')
+                data_url = element.get('data-url', element.get('data-download-url', ''))
+                
+                if 'download' in onclick.lower() and 'http' in onclick:
+                    # Extract URL from JavaScript
+                    import re
+                    url_match = re.search(r"'(https?://[^']+)'", onclick)
+                    if url_match:
+                        download_url = url_match.group(1)
+                        break
+                
+                if data_url and 'http' in data_url:
+                    download_url = data_url
+                    break
+        
+        # If we found a download URL, use it
+        if download_url:
+            st.info(f"🔗 Fant nedlastingslenke: {download_url[:80]}...")
             
-            # Check if it's a valid Excel file
-            if len(content) > 1000:  # Reasonable minimum for Excel
-                # Check for Excel signatures
-                if content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0'):
-                    st.success(f"✅ Downloaded Excel file ({len(content)} bytes)")
+            # Download the actual file
+            download_response = requests.get(download_url, headers=headers, timeout=30, allow_redirects=True)
+            
+            if download_response.status_code == 200:
+                content = download_response.content
+                
+                # Check if it's an Excel file
+                if len(content) > 1000 and (content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0')):
+                    st.success(f"✅ Excel-mal lastet ({len(content)} bytes)")
                     return content
                 else:
-                    # Check if it's HTML (error page)
-                    try:
-                        text_start = content[:200].decode('utf-8', errors='ignore').lower()
-                        if '<html' in text_start or '<!doctype' in text_start:
-                            st.error("❌ Got HTML page instead of Excel. Link may require authentication.")
-                            # Try one more method
-                            return try_alternative_download(share_link)
-                        else:
-                            st.error(f"❌ Not a valid Excel file. First bytes: {content[:20].hex()}")
-                    except:
-                        st.error(f"❌ Not a valid Excel file. Size: {len(content)} bytes")
+                    st.error("❌ Nedlastet fil er ikke en gyldig Excel-fil")
             else:
-                st.error(f"❌ File too small ({len(content)} bytes)")
-        else:
-            st.error(f"❌ Download failed (HTTP {response.status_code})")
-            # Try alternative method
-            return try_alternative_download(share_link)
+                st.error(f"❌ Nedlasting feilet (HTTP {download_response.status_code})")
+        
+        # Fallback: Try direct API method
+        st.info("🔄 Prøver alternativ metode...")
+        
+        # Extract file ID from the share link
+        file_id_match = re.search(r'/([A-Za-z0-9_-]{20,})', share_link)
+        if file_id_match:
+            file_id = file_id_match.group(1)
+            # Try OneDrive API
+            api_url = f"https://api.onedrive.com/v1.0/shares/u!{file_id}/root/content"
             
+            api_response = requests.get(api_url, headers=headers, timeout=30)
+            if api_response.status_code == 200:
+                content = api_response.content
+                if len(content) > 1000 and (content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0')):
+                    st.success(f"✅ API-metode virket! ({len(content)} bytes)")
+                    return content
+        
+        # Last resort: Show manual upload option
+        st.error("""
+        ❌ Kunne ikke laste automatisk fra Excel Cloud
+        
+        **Løsning:**
+        1. Åpne denne lenken i nettleseren: {share_link}
+        2. Klikk "Last ned" eller "Download" i Excel Online
+        3. Last opp den nedlastede filen her:
+        """)
+        
+        # Provide upload fallback
+        uploaded_file = st.file_uploader("Last opp Excel-mal manuelt", type=["xlsx"], key="manual_upload")
+        
+        if uploaded_file:
+            content = uploaded_file.read()
+            if content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0'):
+                st.success("✅ Manuell opplasting vellykket!")
+                return content
+        
         return None
         
     except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        st.error(f"❌ Feil: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
-
+        
 def try_alternative_download(share_link):
     """Try alternative download method"""
     try:
