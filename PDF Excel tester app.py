@@ -437,6 +437,8 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
     """
     Fill using mapping produced by scan_and_map_fill_cells.
     Writes only to the FIRST sheet (per your request).
+    After filling mapped fields it will also replace the "Skriv her" cell
+    (if present) with the company summary (field_values['company_summary']).
     Returns (filled_bytes, report) where report includes mapping, debug, errors, etc.
     """
     report = {"filled": [], "skipped": [], "errors": [], "unmapped_cells": [], "debug_cells": [], "mapping": {}}
@@ -456,7 +458,7 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         return template_bytes, report
     ws = wb[first_sheet_name]
 
-    # Fill fields with mapped coords on first sheet
+    # 1) Fill mapped fields on first sheet
     for field_name, value in field_values.items():
         if field_name in first_map:
             coord = first_map[field_name][0]  # coord stored at index 0
@@ -471,15 +473,13 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         else:
             report["skipped"].append((first_sheet_name, None, field_name, "No mapped cell on first sheet"))
 
-    # Try to auto-map remaining values to unmatched fillable cells on first sheet
+    # 2) Auto-map remaining values to unmatched fillable cells on first sheet
     remaining = {k: v for k, v in field_values.items() if v not in (None, "")}
     for (_s, _coord, f) in report["filled"]:
         remaining.pop(f, None)
 
-    # find unmatched fillable cells for first sheet
     unmatched_first = [t for t in unmatched if t[0] == first_sheet_name]
     if unmatched_first and remaining:
-        # assign remaining fields to those cells in arbitrary order
         for (sheetname, coord, label) in unmatched_first:
             if not remaining:
                 break
@@ -490,6 +490,36 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
             except Exception as e:
                 report["errors"].append((sheetname, coord, field_name, str(e)))
 
+    # 3) SPECIAL HANDLING: place company_summary into the "Skriv her" cell (or A46 fallback)
+    summary = field_values.get("company_summary") or ""
+    if summary:
+        wrote_summary = False
+        # search the first sheet for a cell that contains "skriv her" (case-insensitive)
+        try:
+            for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+                for c in row:
+                    try:
+                        if c.value and isinstance(c.value, str) and "skriv her" in c.value.strip().lower():
+                            c.value = str(summary)
+                            report["filled"].append((first_sheet_name, c.coordinate, "company_summary", "replaced 'Skriv her'"))
+                            wrote_summary = True
+                            break
+                    except Exception:
+                        continue
+                if wrote_summary:
+                    break
+            # fallback: write to A46 if not found and sheet has that cell
+            if not wrote_summary:
+                try:
+                    ws["A46"] = str(summary)
+                    report["filled"].append((first_sheet_name, "A46", "company_summary", "fallback to A46"))
+                    wrote_summary = True
+                except Exception as e:
+                    report["errors"].append((first_sheet_name, "A46", "company_summary", f"Fallback write failed: {e}"))
+        except Exception as e:
+            report["errors"].append((first_sheet_name, None, "company_summary", f"Search/replace failed: {e}"))
+
+    # Save workbook
     out = BytesIO()
     wb.save(out)
     out.seek(0)
