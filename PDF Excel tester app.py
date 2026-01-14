@@ -468,7 +468,7 @@ def load_template_from_excel_cloud():
     """
     try:
         # Get share link from Streamlit secrets
-        share_link = st.secrets.get("excel_cloud", {}).get("share_link", "")
+        share_link = st.secrets.get("excel_cloud", {}).get("https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?e=ccyPnQ", "")
         
         if not share_link:
             st.error("❌ Excel Cloud share link not configured. Add to secrets.toml as [excel_cloud] share_link = 'your-link'")
