@@ -4,11 +4,13 @@ import requests
 import wikipedia
 import streamlit as st
 import pandas as pd
+import pdfplumber
+import difflib
 from io import BytesIO
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
-import pdfplumber
+
 
 # =========================
 # CONFIGURATION
@@ -240,17 +242,16 @@ def _is_fillable(cell):
 
 # mapping keywords for detecting which field a fillable cell corresponds to
 FIELD_KEYWORDS = {
-    "company_name": ["selskapsnavn", "selskap", "navn", "firmanavn", "company", "orgnavn"],
-    "org_number": ["organisasjonsnummer", "org.nr", "org nr", "orgnummer", "organisasjons nr", "org"],
-    "address": ["adresse", "gate", "gatenavn", "street"],
-    "post_nr": ["postnummer", "post nr", "postkode", "post"],
-    "city": ["poststed", "sted", "city", "post"],
-    "employees": ["ansatte", "antall ansatte", "employees"],
-    "homepage": ["hjemmeside", "web", "website", "url"],
-    "nace_description": ["nace", "bransje", "næring", "naeringskode", "næringstype"],
-    "registration_date": ["stiftelsesdato", "registrert", "registration", "registrering"]
+    "company_name": ["selskapsnavn", "selskap", "navn", "firmanavn", "firma", "firma navn", "company", "orgnavn"],
+    "org_number": ["organisasjonsnummer", "org.nr", "org nr", "orgnummer", "organisasjons nr", "org", "orgnummer:"],
+    "address": ["adresse", "gate", "gatenavn", "street", "postadresse", "adr"],
+    "post_nr": ["postnummer", "post nr", "postkode", "post", "postnr"],
+    "city": ["poststed", "sted", "city", "post", "by"],
+    "employees": ["ansatte", "antall ansatte", "antal ansatte", "ansatt", "employees"],
+    "homepage": ["hjemmeside", "web", "website", "url", "nettside"],
+    "nace_description": ["nace", "bransje", "næring", "naeringskode", "næringstype", "bransjetekst"],
+    "registration_date": ["stiftelsesdato", "registrert", "registration", "registrering", "etablert"]
 }
-
 
 def _normalize_label(text):
     if not text:
@@ -259,58 +260,49 @@ def _normalize_label(text):
 
 
 def _match_field_by_label(label_text):
-    lab = _normalize_label(label_text)
+    """
+    Try to match a nearby label (string) to a field name.
+    Steps:
+      1) Normalize and do substring checks (fast, exact-ish).
+      2) Token-level partial matches (e.g. label contains token 'ansatte').
+      3) Fuzzy match against keywords using SequenceMatcher; require conservative threshold.
+    Returns field_name or None.
+    """
+    if not label_text:
+        return None
+
+    lab = _normalize_label(label_text)  # normalized lower-case tokens
+
+    # 1) Exact substring match of any keyword
     for field, keywords in FIELD_KEYWORDS.items():
         for kw in keywords:
             if kw in lab:
                 return field
+
+    # 2) Token-level presence (label tokens vs keyword fragment)
+    lab_tokens = lab.split()
+    for field, keywords in FIELD_KEYWORDS.items():
+        for kw in keywords:
+            kw_tokens = kw.split()
+            # if any keyword token is in label tokens -> match
+            if any(tok in lab_tokens for tok in kw_tokens):
+                return field
+
+    # 3) Fuzzy match: compute best ratio across all keywords → require threshold
+    best_field = None
+    best_score = 0.0
+    for field, keywords in FIELD_KEYWORDS.items():
+        for kw in keywords:
+            score = difflib.SequenceMatcher(None, lab, kw).ratio()
+            if score > best_score:
+                best_score = score
+                best_field = field
+
+    # Conservative threshold: 0.60 — adjust upward if you get false positives
+    if best_score >= 0.60:
+        return best_field
+
     return None
-
-
-def scan_and_map_fill_cells(wb_bytes):
-    """
-    Scan the workbook for cells with the exact target fill color.
-    Returns:
-      - mapping: { sheetname: { field_name: (cell_coordinate, current_value) } }
-      - unmatched_cells: [ (sheetname, coord, label_nearby) ]
-      - debug_cells: list of (sheet, coord, hex or None, is_fillable_bool, near_label)
-    """
-    mapping = {}
-    unmatched = []
-    debug_cells = []
-    wb = load_workbook(BytesIO(wb_bytes), data_only=False)
-    for ws in wb.worksheets:
-        smap = {}
-        for row in ws.iter_rows():
-            for cell in row:
-                try:
-                    fg = getattr(cell.fill, "fgColor", None) or getattr(cell.fill, "start_color", None)
-                    hexcol = _rgb_hex_from_color(fg)
-                    is_fill = _is_fillable(cell)
-                    # find nearby label (left or above)
-                    label = ""
-                    if cell.column > 1:
-                        left = ws.cell(row=cell.row, column=cell.column - 1).value
-                        if left:
-                            label = str(left)
-                    if not label and cell.row > 1:
-                        above = ws.cell(row=cell.row - 1, column=cell.column).value
-                        if above:
-                            label = str(above)
-                    combined = " ".join(filter(None, [label, str(ws.cell(row=cell.row - 1, column=cell.column).value or "")]))
-                    field = _match_field_by_label(label) or _match_field_by_label(combined)
-                    debug_cells.append((ws.title, cell.coordinate, hexcol, is_fill, label))
-                    if is_fill:
-                        if field:
-                            smap[field] = (ws.title, cell.coordinate, cell.value)
-                        else:
-                            unmatched.append((ws.title, cell.coordinate, label or None))
-                except Exception:
-                    continue
-        if smap:
-            mapping[ws.title] = smap
-    return mapping, unmatched, debug_cells
-
 
 def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
     """
