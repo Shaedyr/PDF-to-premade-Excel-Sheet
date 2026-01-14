@@ -1,16 +1,15 @@
 import os
 import re
+import difflib
 import requests
 import wikipedia
 import streamlit as st
 import pandas as pd
-import pdfplumber
-import difflib
 from io import BytesIO
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
-
+import pdfplumber
 
 # =========================
 # CONFIGURATION
@@ -20,7 +19,6 @@ for k, v in {"extracted_data": {}, "api_response": None, "excel_ready": False, "
     if k not in st.session_state:
         st.session_state[k] = v
 
-# Keep existing session keys used by UI
 for k in ('selected_company_data', 'companies_list', 'current_search', 'last_search', 'show_dropdown'):
     if k not in st.session_state:
         st.session_state[k] = None if k == 'selected_company_data' else [] if k == 'companies_list' else "" if k in (
@@ -131,7 +129,7 @@ def create_summary_from_brreg_data(d: dict):
 
 
 # =========================
-# BRØNNØYSUND LIVE SEARCH (unchanged)
+# BRØNNØYSUND LIVE SEARCH
 # =========================
 @st.cache_data(ttl=3600)
 def search_companies_live(name: str):
@@ -141,7 +139,9 @@ def search_companies_live(name: str):
         r = requests.get("https://data.brreg.no/enhetsregisteret/api/enheter",
                          params={"navn": name.strip(), "size": 10}, timeout=30)
         if r.status_code == 200:
-            return r.json().get("_embedded", {}).get("enheter", []) or []
+            data = r.json()
+            companies = data.get("_embedded", {}).get("enheter", [])
+            return companies if companies else []
     except Exception:
         pass
     return []
@@ -177,14 +177,13 @@ def get_company_details(company: dict):
 
 
 # =========================
-# EXCEL TEMPLATE HANDLING (updated)
-# - Do NOT rename sheets (user requested)
-# - Detect fillable cells by exact RGB match to F2F2F2 (only those will be filled)
-# - Fill Brønnøysund-derived data on the FIRST sheet only
-# - Provide debug listing of detected cells so you can confirm detection
+# EXCEL TEMPLATE HANDLING
+# - exact target color: F2F2F2
+# - fill only FIRST sheet with Brreg data
+# - robust Norwegian keyword/fuzzy matching
 # =========================
+TARGET_FILL_HEX = "F2F2F2"  # exact hex to detect fillable cells
 
-TARGET_FILL_HEX = "F2F2F2"  # cells to fill must have this exact color
 
 def load_template_from_github():
     try:
@@ -204,43 +203,22 @@ def load_template_from_github():
 
 
 def _rgb_hex_from_color(col):
-    """
-    Given an openpyxl Color object, try to return a 6-char hex string like 'F2F2F2', or None.
-    Handles 'FF' alpha prefix.
-    """
     try:
         if not col:
             return None
         rgb = getattr(col, "rgb", None)
         if rgb:
             rgb = rgb.upper()
-            if len(rgb) == 8:  # possibly 'FFRRGGBB'
+            if len(rgb) == 8:
                 rgb = rgb[2:]
             if len(rgb) == 6:
                 return rgb
-        # other color types (theme/indexed) we do not resolve -> None
         return None
     except Exception:
         return None
 
 
-def _is_fillable(cell):
-    """
-    Only treat a cell as fillable when its fill color exactly matches TARGET_FILL_HEX.
-    Conservative: if color cannot be resolved, we do NOT fill.
-    """
-    try:
-        f = cell.fill
-        fg = getattr(f, "fgColor", None) or getattr(f, "start_color", None)
-        hexcol = _rgb_hex_from_color(fg)
-        if hexcol and hexcol.upper() == TARGET_FILL_HEX:
-            return True
-        return False
-    except Exception:
-        return False
-
-
-# mapping keywords for detecting which field a fillable cell corresponds to
+# Expanded keywords (Norwegian variants + common labels)
 FIELD_KEYWORDS = {
     "company_name": ["selskapsnavn", "selskap", "navn", "firmanavn", "firma", "firma navn", "company", "orgnavn"],
     "org_number": ["organisasjonsnummer", "org.nr", "org nr", "orgnummer", "organisasjons nr", "org", "orgnummer:"],
@@ -253,6 +231,7 @@ FIELD_KEYWORDS = {
     "registration_date": ["stiftelsesdato", "registrert", "registration", "registrering", "etablert"]
 }
 
+
 def _normalize_label(text):
     if not text:
         return ""
@@ -260,35 +239,25 @@ def _normalize_label(text):
 
 
 def _match_field_by_label(label_text):
-    """
-    Try to match a nearby label (string) to a field name.
-    Steps:
-      1) Normalize and do substring checks (fast, exact-ish).
-      2) Token-level partial matches (e.g. label contains token 'ansatte').
-      3) Fuzzy match against keywords using SequenceMatcher; require conservative threshold.
-    Returns field_name or None.
-    """
     if not label_text:
         return None
+    lab = _normalize_label(label_text)
 
-    lab = _normalize_label(label_text)  # normalized lower-case tokens
-
-    # 1) Exact substring match of any keyword
+    # 1) Exact substring match
     for field, keywords in FIELD_KEYWORDS.items():
         for kw in keywords:
             if kw in lab:
                 return field
 
-    # 2) Token-level presence (label tokens vs keyword fragment)
+    # 2) Token-level presence
     lab_tokens = lab.split()
     for field, keywords in FIELD_KEYWORDS.items():
         for kw in keywords:
             kw_tokens = kw.split()
-            # if any keyword token is in label tokens -> match
             if any(tok in lab_tokens for tok in kw_tokens):
                 return field
 
-    # 3) Fuzzy match: compute best ratio across all keywords → require threshold
+    # 3) Conservative fuzzy match
     best_field = None
     best_score = 0.0
     for field, keywords in FIELD_KEYWORDS.items():
@@ -298,37 +267,66 @@ def _match_field_by_label(label_text):
                 best_score = score
                 best_field = field
 
-    # Conservative threshold: 0.60 — adjust upward if you get false positives
     if best_score >= 0.60:
         return best_field
 
     return None
 
+
+def scan_and_map_fill_cells(wb_bytes):
+    mapping = {}
+    unmatched = []
+    debug_cells = []
+    wb = load_workbook(BytesIO(wb_bytes), data_only=False)
+    for ws in wb.worksheets:
+        smap = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                try:
+                    fg = getattr(cell.fill, "fgColor", None) or getattr(cell.fill, "start_color", None)
+                    hexcol = _rgb_hex_from_color(fg)
+                    is_fill = True if (hexcol and hexcol.upper() == TARGET_FILL_HEX) else False
+                    label = ""
+                    if cell.column > 1:
+                        left = ws.cell(row=cell.row, column=cell.column - 1).value
+                        if left:
+                            label = str(left)
+                    if not label and cell.row > 1:
+                        above = ws.cell(row=cell.row - 1, column=cell.column).value
+                        if above:
+                            label = str(above)
+                    combined = " ".join(filter(None, [label, str(ws.cell(row=cell.row - 1, column=cell.column).value or "")]))
+                    field = _match_field_by_label(label) or _match_field_by_label(combined)
+                    debug_cells.append((ws.title, cell.coordinate, hexcol, is_fill, label))
+                    if is_fill:
+                        if field:
+                            smap[field] = (ws.title, cell.coordinate, cell.value)
+                        else:
+                            unmatched.append((ws.title, cell.coordinate, label or None))
+                except Exception:
+                    continue
+        if smap:
+            mapping[ws.title] = smap
+    return mapping, unmatched, debug_cells
+
+
 def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
-    """
-    Fill mapped cells, but only on the FIRST sheet for Brønnøysund-derived data.
-    Returns (filled_bytes, report).
-    """
     report = {"filled": [], "skipped": [], "errors": [], "unmapped_cells": [], "debug_cells": []}
     wb_scan = load_workbook(BytesIO(template_bytes), data_only=False)
     sheet_names = wb_scan.sheetnames
     first_sheet_name = sheet_names[0] if sheet_names else None
 
-    # scan mapping/unmatched/debug for whole workbook (for debug), but we will fill only first sheet
     mapping, unmatched, debug_cells = scan_and_map_fill_cells(template_bytes)
     report["debug_cells"] = debug_cells
 
-    # Only consider mapping on the first sheet for actual filling
     first_map = mapping.get(first_sheet_name, {}) if first_sheet_name else {}
 
-    # Prepare workbook to write
     wb = load_workbook(BytesIO(template_bytes))
     if not first_sheet_name:
         report["errors"].append(("NO_SHEET", None, "No sheets found in template"))
         return template_bytes, report
     ws = wb[first_sheet_name]
 
-    # Fill fields that have a mapped cell on the first sheet
     for field_name, value in field_values.items():
         if field_name in first_map:
             coord = first_map[field_name][1]
@@ -341,34 +339,24 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
             except Exception as e:
                 report["errors"].append((first_sheet_name, coord, field_name, str(e)))
         else:
-            # Not mapped on first sheet; skip for now (per user: fill on first sheet)
             report["skipped"].append((first_sheet_name, None, field_name, "No mapped cell on first sheet"))
 
-    # For unmatched fillable cells on the first sheet, try to auto-fill remaining values (if any)
     remaining = {k: v for k, v in field_values.items() if v not in (None, "")}
-    for _, _, f, *rest in report["filled"]:
-        # remove filled fields
+    for _, _, f in report["filled"]:
         remaining.pop(f, None)
 
-    if unmatched:
-        # filter unmatched to first sheet only
-        unmatched_first = [t for t in unmatched if t[0] == first_sheet_name]
-        if unmatched_first and remaining:
-            # fill unmatched first-sheet cells in insertion order with remaining fields
-            for (sheetname, coord, label) in unmatched_first:
-                if not remaining:
-                    break
-                field_name, val = remaining.popitem()
-                try:
-                    wb[sheetname][coord].value = str(val)
-                    report["filled"].append((sheetname, coord, field_name, "auto-mapped"))
-                except Exception as e:
-                    report["errors"].append((sheetname, coord, field_name, str(e)))
-        else:
-            # nothing to auto-map or no remaining values
-            pass
+    unmatched_first = [t for t in unmatched if t[0] == first_sheet_name]
+    if unmatched_first and remaining:
+        for (sheetname, coord, label) in unmatched_first:
+            if not remaining:
+                break
+            field_name, val = remaining.popitem()
+            try:
+                wb[sheetname][coord].value = str(val)
+                report["filled"].append((sheetname, coord, field_name, "auto-mapped"))
+            except Exception as e:
+                report["errors"].append((sheetname, coord, field_name, str(e)))
 
-    # Save workbook
     out = BytesIO()
     wb.save(out)
     out.seek(0)
@@ -377,12 +365,10 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
 
 
 # =========================
-# PDF SCANNING HELPERS
-# - naive extraction heuristics (org number, company name, address, postcode/city)
-# - if org number found we fetch Brreg details (more reliable)
+# PDF EXTRACTION HELPERS
 # =========================
 ORG_RE = re.compile(r'\b(\d{9})\b')
-ORG_IN_TEXT_RE = re.compile(r'(organisasjonsnummer|org.nr|org nr|orgnummer)[:\s]*?(\d{9})', flags=re.I)
+ORG_IN_TEXT_RE = re.compile(r'(organisasjonsnummer|org\.?nr|org nr|orgnummer)[:\s]*?(\d{9})', flags=re.I)
 COMPANY_WITH_SUFFIX_RE = re.compile(r'([A-ZÆØÅ][A-Za-zÆØÅæøå\.\-&\s]{1,120}?)\s+(AS|ASA|ANS|DA|ENK|KS|BA)\b',
                                      flags=re.I)
 
@@ -391,8 +377,7 @@ def extract_text_from_pdf(file_bytes):
     try:
         text = ""
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
-            # combine first few pages to be safe
-            for i, page in enumerate(pdf.pages[:4]):
+            for i, page in enumerate(pdf.pages[:6]):
                 text += page.extract_text() or ""
         return text
     except Exception:
@@ -402,7 +387,6 @@ def extract_text_from_pdf(file_bytes):
 def extract_fields_from_pdf_bytes(pdf_bytes):
     txt = extract_text_from_pdf(pdf_bytes)
     fields = {}
-    # org number
     m = ORG_IN_TEXT_RE.search(txt)
     if m:
         fields["org_number"] = m.group(2)
@@ -410,24 +394,19 @@ def extract_fields_from_pdf_bytes(pdf_bytes):
         m2 = ORG_RE.search(txt)
         if m2:
             fields["org_number"] = m2.group(1)
-    # company name
     m3 = COMPANY_WITH_SUFFIX_RE.search(txt)
     if m3:
-        name = m3.group(0).strip()
-        fields["company_name"] = name
+        fields["company_name"] = m3.group(0).strip()
     else:
-        # fallback: first non-empty line that looks like a name (capitalized)
         lines = [l.strip() for l in txt.splitlines() if l.strip()]
-        for ln in lines[:20]:
+        for ln in lines[:30]:
             if len(ln) > 3 and any(ch.isalpha() for ch in ln) and ln == ln.title():
                 fields["company_name"] = ln
                 break
-    # postcode + city
     mpc = re.search(r'(\d{4})\s+([A-ZÆØÅa-zæøå\-\s]{2,50})', txt)
     if mpc:
         fields["post_nr"] = mpc.group(1)
         fields["city"] = mpc.group(2).strip()
-    # address - heuristic: look for lines with street + number
     maddr = re.search(r'([A-ZÆØÅa-zæøå\.\-\s]{3,60}\s+\d{1,4}[A-Za-z]?)', txt)
     if maddr:
         fields["address"] = maddr.group(1).strip()
@@ -475,9 +454,7 @@ def format_brreg_data(api_data):
 
 
 # =========================
-# STREAMLIT UI (unchanged layout)
-# - UI kept same per user request
-# - Now fills FIRST sheet only and only cells with color F2F2F2
+# STREAMLIT UI (kept layout)
 # =========================
 def main():
     st.title("📄 PDF → Excel (Brønnøysund)")
@@ -542,7 +519,6 @@ def main():
 
     st.markdown("---")
 
-    # Load Excel template (only once)
     if 'template_loaded' not in st.session_state:
         with st.spinner("Laster Excel-mal..."):
             template_bytes = load_template_from_github()
@@ -554,7 +530,7 @@ def main():
                 st.session_state.template_loaded = False
                 st.error("❌ Kunne ikke laste Excel-mal")
 
-    # Provide inspection UI (optional) but does not change main UI layout
+    # Inspector UI
     st.markdown("---")
     st.markdown("### 🔎 Inspeksjon (valgfritt)")
     ins_col1, ins_col2 = st.columns(2)
@@ -563,15 +539,15 @@ def main():
         if uploaded_xlsx:
             try:
                 info = {}
-                wb = load_workbook(BytesIO(uploaded_xlsx.read()), data_only=True)
+                data_bytes = uploaded_xlsx.read()
+                wb = load_workbook(BytesIO(data_bytes), data_only=True)
                 info["sheets"] = wb.sheetnames
                 ws = wb.worksheets[0]
                 info["sheet_title"] = ws.title
                 info["merged_ranges"] = [str(r) for r in ws.merged_cells.ranges]
                 info["A2"] = (ws["A2"].value or "")[:1000]
-                # show detected fillable cells (by inspecting fills)
                 dbg_map = []
-                wb_full = load_workbook(BytesIO(uploaded_xlsx.read()), data_only=False)
+                wb_full = load_workbook(BytesIO(data_bytes), data_only=False)
                 for w in wb_full.worksheets:
                     for row in w.iter_rows():
                         for c in row:
@@ -582,7 +558,7 @@ def main():
                                     dbg_map.append((w.title, c.coordinate, hexcol, True if hexcol.upper() == TARGET_FILL_HEX else False))
                             except Exception:
                                 continue
-                info["detected_colors_sample"] = dbg_map[:200]
+                info["detected_colors_sample"] = dbg_map[:400]
                 st.json(info)
             except Exception as e:
                 st.error(f"Kunne ikke lese filen: {e}")
@@ -600,7 +576,6 @@ def main():
                     info["sheet_title"] = ws.title
                     info["merged_ranges"] = [str(r) for r in ws.merged_cells.ranges]
                     info["A2"] = (ws["A2"].value or "")[:1000]
-                    # show colors sample for first sheet
                     wb_full = load_workbook(BytesIO(tb), data_only=False)
                     dbg_map = []
                     w = wb_full.worksheets[0]
@@ -613,65 +588,53 @@ def main():
                                     dbg_map.append((w.title, c.coordinate, hexcol, True if hexcol.upper() == TARGET_FILL_HEX else False))
                             except Exception:
                                 continue
-                    info["first_sheet_color_sample"] = dbg_map[:200]
+                    info["first_sheet_color_sample"] = dbg_map[:400]
                     st.json(info)
                 except Exception as e:
                     st.error(f"Feil ved inspeksjon av mal: {e}")
 
     st.markdown("---")
 
-    # Processing button: now uses PDF scanning and template scanning + mapping (fills first sheet only)
+    # Process
     if st.button("🚀 Prosesser & Oppdater Excel", use_container_width=True):
-        # Ensure template loaded
         if not st.session_state.get('template_loaded'):
             st.error("❌ Excel-mal ikke tilgjengelig")
             st.stop()
 
-        # Start with empty field values
         field_values = {}
-
-        # 1) If user selected a company from dropdown (Brreg), use that data as base
         if st.session_state.selected_company_data:
             field_values.update(st.session_state.selected_company_data)
 
-        # 2) If PDF uploaded, extract fields from PDF and prefer them (or use them to find org and then Brreg)
         if pdf_file:
             try:
                 pdf_bytes = pdf_file.read()
                 extracted = extract_fields_from_pdf_bytes(pdf_bytes)
-                # If org_number found, fetch Brreg to obtain richer data
                 if "org_number" in extracted:
                     br = fetch_brreg_by_org(extracted["org_number"])
                     if br:
                         br_data = format_brreg_data(br)
-                        # Brreg data takes precedence
                         for k, v in br_data.items():
                             if v:
                                 field_values[k] = v
-                        # overlay PDF provided fields where useful
                         for k, v in extracted.items():
                             if v:
                                 field_values[k] = v
                     else:
                         field_values.update(extracted)
                 else:
-                    # No org number, just merge the extracted PDF fields
                     field_values.update(extracted)
             except Exception as e:
                 st.error(f"❌ Feil ved PDF-parsing: {e}")
 
-        # If still no data and no selection -> error
         if not field_values:
             st.error("❌ Ingen selskapsdata funnet. Velg et selskap fra listen eller last opp en PDF som inneholder selskapets informasjon.")
             st.stop()
 
         st.session_state.extracted_data = field_values
 
-        # 3) Fill the workbook by scanning fillable cells and mapping labels (first sheet only)
         try:
             updated_bytes, report = fill_workbook_bytes(st.session_state.template_bytes, field_values)
             st.session_state.excel_bytes = updated_bytes
-            # Evaluate report for errors/warnings
             if report["errors"]:
                 st.error("Noen celler kunne ikke fylles. Se detaljer under.")
                 for err in report["errors"]:
@@ -688,7 +651,6 @@ def main():
                 st.success(f"✅ Fylte {len(report['filled'])} celler i første arket.")
             else:
                 st.warning("Kunne ikke fylle noen celler på første arket — sjekk malen og feltene.")
-            # Show detection debug so you can verify which cells were considered fillable vs headers
             if report.get("debug_cells"):
                 st.markdown("**Oppdagede celler (debug)**")
                 df_dbg = pd.DataFrame(report["debug_cells"], columns=["sheet", "cell", "rgb_hex", "is_fillable", "near_label"])
@@ -698,9 +660,7 @@ def main():
             st.error(f"❌ Feil ved utfylling av Excel: {e}")
             st.session_state.excel_ready = False
 
-    # =========================
-    # DISPLAY EXTRACTED DATA (UI unchanged)
-    # =========================
+    # Display extracted data
     if st.session_state.extracted_data:
         st.markdown("---")
         st.subheader("📋 Ekstraherte data")
@@ -728,9 +688,7 @@ def main():
                 st.write("**Sammendrag (går i celle A2:D13):**")
                 st.info(st.session_state.company_summary)
 
-    # =========================
-    # DOWNLOAD (UI unchanged)
-    # =========================
+    # Download
     if st.session_state.get('excel_ready') and st.session_state.get('excel_bytes'):
         st.markdown("---")
         st.subheader("📥 Last ned")
