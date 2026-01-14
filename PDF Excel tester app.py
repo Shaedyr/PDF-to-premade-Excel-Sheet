@@ -64,10 +64,10 @@ def _wiki_summary(name: str):
     return None
 
 
-def _web_summary(name: str):
-    if not name:
+def _web_summary(name_or_query: str):
+    if not name_or_query:
         return None
-    q = _strip_suffix(name)
+    q = _strip_suffix(name_or_query)
     for term in ("bedrift", "company"):
         try:
             url = f"https://api.duckduckgo.com/?q={requests.utils.quote(q + ' ' + term)}&format=json&no_html=1&skip_disambig=1"
@@ -112,8 +112,7 @@ def create_summary_from_brreg_data(d: dict):
         try:
             emp_count = int(emp)
             if emp_count > 200:
-                parts.append(
-                    f"Som en større arbeidsgiver med {emp_count} ansatte, har det betydelig samfunnspåvirkning.")
+                parts.append(f"Som en større arbeidsgiver med {emp_count} ansatte, har det betydelig samfunnspåvirkning.")
             elif emp_count > 50:
                 parts.append(f"Med {emp_count} ansatte representerer det et mellomstort foretak.")
             elif emp_count > 10:
@@ -178,9 +177,6 @@ def get_company_details(company: dict):
 
 # =========================
 # EXCEL TEMPLATE HANDLING
-# - exact target color: F2F2F2
-# - fill only FIRST sheet with Brreg data
-# - robust Norwegian keyword/fuzzy matching
 # =========================
 TARGET_FILL_HEX = "F2F2F2"  # exact hex to detect fillable cells
 
@@ -218,16 +214,21 @@ def _rgb_hex_from_color(col):
         return None
 
 
-# Expanded keywords (Norwegian variants + common labels)
+# Expanded keywords including exact labels you listed
 FIELD_KEYWORDS = {
-    "company_name": ["selskapsnavn", "selskap", "navn", "firmanavn", "firma", "firma navn", "company", "orgnavn"],
-    "org_number": ["organisasjonsnummer", "org.nr", "org nr", "orgnummer", "organisasjons nr", "org", "orgnummer:"],
+    "company_name": ["selskapsnavn", "selskap", "navn", "firmanavn", "firma", "kunde", "firma navn", "company", "orgnavn", "dagens selskap"],
+    "org_number": ["organisasjonsnummer", "org.nr", "org nr", "orgnummer", "orgnr", "org", "orgnummer:", "orgnr"],
     "address": ["adresse", "gate", "gatenavn", "street", "postadresse", "adr"],
     "post_nr": ["postnummer", "post nr", "postkode", "post", "postnr"],
-    "city": ["poststed", "sted", "city", "post", "by"],
+    "nace_code": ["nacekode", "nace kode", "nace", "naeringskode", "næringskode"],
+    "nace_description": ["bransje", "næring", "bransjetekst"],
     "employees": ["ansatte", "antall ansatte", "antal ansatte", "ansatt", "employees"],
-    "homepage": ["hjemmeside", "web", "website", "url", "nettside"],
-    "nace_description": ["nace", "bransje", "næring", "naeringskode", "næringstype", "bransjetekst"],
+    "homepage": ["hjemmeside", "web", "website", "url", "nettside", "hjemmeside:"],
+    "revenue_2024": ["omsetning 2024", "omsetning", "omsetning 2023", "omsetning 2022"],
+    "economy": ["økonomi", "okonomi", "finans", "financial", "økonomisk"],
+    "damage_count": ["skadetall", "skade", "skadet", "skadetall:"],
+    "company_summary": ["om bedriften", "sammendrag", "om bedriften:", "om selskapet", "om oss"],
+    "tender_deadline": ["anbudsfrist", "frist", "anbuds frist", "anbudsfrist:"],
     "registration_date": ["stiftelsesdato", "registrert", "registration", "registrering", "etablert"]
 }
 
@@ -243,21 +244,20 @@ def _match_field_by_label(label_text):
         return None
     lab = _normalize_label(label_text)
 
-    # 1) Exact substring match
+    # 1) exact substring
     for field, keywords in FIELD_KEYWORDS.items():
         for kw in keywords:
             if kw in lab:
                 return field
 
-    # 2) Token-level presence
+    # 2) token-level (partial)
     lab_tokens = lab.split()
     for field, keywords in FIELD_KEYWORDS.items():
         for kw in keywords:
-            kw_tokens = kw.split()
-            if any(tok in lab_tokens for tok in kw_tokens):
+            if any(tok in lab_tokens for tok in kw.split()):
                 return field
 
-    # 3) Conservative fuzzy match
+    # 3) fuzzy
     best_field = None
     best_score = 0.0
     for field, keywords in FIELD_KEYWORDS.items():
@@ -266,25 +266,18 @@ def _match_field_by_label(label_text):
             if score > best_score:
                 best_score = score
                 best_field = field
-
     if best_score >= 0.60:
         return best_field
-
     return None
 
 
-# --------- REPLACE scan_and_map_fill_cells WITH THIS ----------
 def scan_and_map_fill_cells(wb_bytes):
     """
     Two-pass mapping:
-    1) Find all fillable cells (exact F2F2F2).
-    2) For each fillable cell try local label matching (left/above/right/below, diags).
-    3) For remaining unmapped fields, search whole sheet for label keywords and assign
-       nearest unassigned fillable cell.
+      - detect exact F2F2F2 fillable cells
+      - local neighborhood labeling
+      - global label search & nearest fillable assignment
     Returns mapping, unmatched, debug_cells
-      - mapping: { sheetname: { field_name: (cell_coordinate, assigned_by, label_text) } }
-      - unmatched: list of (sheetname, coord, nearby_label)
-      - debug_cells: list of (sheet, coord, hex, is_fillable, nearby_label)
     """
     mapping = {}
     unmatched = []
@@ -294,7 +287,7 @@ def scan_and_map_fill_cells(wb_bytes):
     for ws in wb.worksheets:
         sheet_fillables = []  # list of (row, col, coord)
         assigned = {}         # field -> (coord, assigned_by, label)
-        cell_by_coord = {}    # coord -> cell object for nearest calc
+        cell_by_coord = {}
         # collect fillable cells and debug info
         for row in ws.iter_rows():
             for cell in row:
@@ -302,7 +295,6 @@ def scan_and_map_fill_cells(wb_bytes):
                     fg = getattr(cell.fill, "fgColor", None) or getattr(cell.fill, "start_color", None)
                     hexcol = _rgb_hex_from_color(fg)
                     is_fill = True if (hexcol and hexcol.upper() == TARGET_FILL_HEX) else False
-                    # nearby label attempt (simple left/above)
                     label = ""
                     if cell.column > 1:
                         left = ws.cell(row=cell.row, column=cell.column - 1).value
@@ -320,18 +312,17 @@ def scan_and_map_fill_cells(wb_bytes):
                 except Exception:
                     continue
 
-        # local matching: for each fillable look around in a neighborhood for labels
+        # local matching for fillables
         for r, c, coord in sheet_fillables:
-            # build list of neighbor coords to probe in order of priority
             neighbors = [
-                (r, c - 1), (r, c - 2),     # left, left2
-                (r - 1, c), (r - 2, c),     # above, above2
-                (r, c + 1), (r, c + 2),     # right, right2
-                (r + 1, c), (r + 2, c),     # below, below2
+                (r, c - 1), (r, c - 2),
+                (r - 1, c), (r - 2, c),
+                (r, c + 1), (r, c + 2),
+                (r + 1, c), (r + 2, c),
                 (r - 1, c - 1), (r - 1, c + 1), (r + 1, c - 1), (r + 1, c + 1)
             ]
-            found_label = ""
             found_field = None
+            found_label = ""
             for rr, cc in neighbors:
                 if rr < 1 or cc < 1:
                     continue
@@ -346,8 +337,7 @@ def scan_and_map_fill_cells(wb_bytes):
                 except Exception:
                     continue
 
-        # global mapping for remaining fields: search sheet for label cells (keywords)
-        # precompute list of all candidate label cells with their normalized text
+        # global mapping: find label cells and assign nearest unassigned fillable
         label_cells = []
         for row in ws.iter_rows():
             for cell in row:
@@ -358,39 +348,31 @@ def scan_and_map_fill_cells(wb_bytes):
                 except Exception:
                     continue
 
-        # for fields not yet assigned, find the best label cell and nearest unassigned fillable
         all_fields = list(FIELD_KEYWORDS.keys())
         unassigned_fields = [f for f in all_fields if f not in assigned]
-        # compute set of unassigned fillable coords
         unassigned_fill_coords = [coord for (_r, _c, coord) in sheet_fillables]
 
         def manhattan(r1, c1, r2, c2):
             return abs(r1 - r2) + abs(c1 - c2)
 
         for field in unassigned_fields:
-            # search label_cells for any that match the field keywords (normalized/fuzzy)
             best_label_cell = None
             best_label_score = 0.0
             for rr, cc, coord_label, raw in label_cells:
                 lab = _normalize_label(raw)
-                # quick substring check
                 for kw in FIELD_KEYWORDS[field]:
                     if kw in lab:
-                        # immediate strong match
                         best_label_cell = (rr, cc, coord_label, raw)
                         best_label_score = 1.0
                         break
-                # otherwise fuzzy check
                 if best_label_cell is None:
                     for kw in FIELD_KEYWORDS[field]:
                         score = difflib.SequenceMatcher(None, lab, kw).ratio()
                         if score > best_label_score:
                             best_label_score = score
                             best_label_cell = (rr, cc, coord_label, raw)
-            # accept if strong enough
             if best_label_cell and best_label_score >= 0.55:
                 rr, cc, coord_label, raw = best_label_cell
-                # find nearest unassigned fillable cell
                 best_fill = None
                 best_dist = None
                 for (_r, _c, coord_fill) in sheet_fillables:
@@ -402,18 +384,14 @@ def scan_and_map_fill_cells(wb_bytes):
                         best_fill = coord_fill
                 if best_fill:
                     assigned[field] = (best_fill, "global", raw)
-                    # mark that fill coord as assigned
                     if best_fill in unassigned_fill_coords:
                         unassigned_fill_coords.remove(best_fill)
 
-        # build mapping for sheet
         smap = {}
         for f, v in assigned.items():
-            smap[f] = v  # (coord, assigned_by, label)
-        # unmatched are fillables left without assignment
+            smap[f] = v
         remaining_unmapped = [coord for coord in [t[2] for t in sheet_fillables] if coord not in [v[0] for v in assigned.values()]]
         for coord_un in remaining_unmapped:
-            # find nearby label for info
             lab = ""
             r_cell = ws[coord_un].row
             c_cell = ws[coord_un].column
@@ -436,10 +414,7 @@ def scan_and_map_fill_cells(wb_bytes):
 def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
     """
     Fill using mapping produced by scan_and_map_fill_cells.
-    Writes only to the FIRST sheet (per your request).
-    After filling mapped fields it will also replace the "Skriv her" cell
-    (if present) with the company summary (field_values['company_summary']).
-    Returns (filled_bytes, report) where report includes mapping, debug, errors, etc.
+    Write only to the FIRST sheet. Replace "Skriv her" with summary (or A46 fallback).
     """
     report = {"filled": [], "skipped": [], "errors": [], "unmapped_cells": [], "debug_cells": [], "mapping": {}}
     wb_scan = load_workbook(BytesIO(template_bytes), data_only=False)
@@ -458,10 +433,10 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         return template_bytes, report
     ws = wb[first_sheet_name]
 
-    # 1) Fill mapped fields on first sheet
+    # fill mapped fields
     for field_name, value in field_values.items():
         if field_name in first_map:
-            coord = first_map[field_name][0]  # coord stored at index 0
+            coord = first_map[field_name][0]
             try:
                 if value not in (None, ""):
                     ws[coord].value = str(value)
@@ -473,7 +448,7 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         else:
             report["skipped"].append((first_sheet_name, None, field_name, "No mapped cell on first sheet"))
 
-    # 2) Auto-map remaining values to unmatched fillable cells on first sheet
+    # auto-map remaining values to unmatched fillable cells
     remaining = {k: v for k, v in field_values.items() if v not in (None, "")}
     for (_s, _coord, f) in report["filled"]:
         remaining.pop(f, None)
@@ -490,17 +465,17 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
             except Exception as e:
                 report["errors"].append((sheetname, coord, field_name, str(e)))
 
-    # 3) SPECIAL HANDLING: place company_summary into the "Skriv her" cell (or A46 fallback)
+    # replace "Skriv her" (case-insensitive) with company summary; fallback to A46
     summary = field_values.get("company_summary") or ""
     if summary:
         wrote_summary = False
-        # search the first sheet for a cell that contains "skriv her" (case-insensitive)
         try:
             for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                 for c in row:
                     try:
                         if c.value and isinstance(c.value, str) and "skriv her" in c.value.strip().lower():
                             c.value = str(summary)
+                            c.alignment = Alignment(wrap_text=True, vertical='top')
                             report["filled"].append((first_sheet_name, c.coordinate, "company_summary", "replaced 'Skriv her'"))
                             wrote_summary = True
                             break
@@ -508,10 +483,10 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
                         continue
                 if wrote_summary:
                     break
-            # fallback: write to A46 if not found and sheet has that cell
             if not wrote_summary:
                 try:
                     ws["A46"] = str(summary)
+                    ws["A46"].alignment = Alignment(wrap_text=True, vertical='top')
                     report["filled"].append((first_sheet_name, "A46", "company_summary", "fallback to A46"))
                     wrote_summary = True
                 except Exception as e:
@@ -519,7 +494,6 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
         except Exception as e:
             report["errors"].append((first_sheet_name, None, "company_summary", f"Search/replace failed: {e}"))
 
-    # Save workbook
     out = BytesIO()
     wb.save(out)
     out.seek(0)
@@ -573,6 +547,17 @@ def extract_fields_from_pdf_bytes(pdf_bytes):
     maddr = re.search(r'([A-ZÆØÅa-zæøå\.\-\s]{3,60}\s+\d{1,4}[A-Za-z]?)', txt)
     if maddr:
         fields["address"] = maddr.group(1).strip()
+
+    # Omsetning (revenue) - best-effort
+    mrev = re.search(r'omsetning\s*(?:2024)?[:\s]*([\d\s\.,]+(?:kr)?)', txt, flags=re.I)
+    if mrev:
+        fields["revenue_2024"] = mrev.group(1).strip()
+
+    # Tender deadline (anbudsfrist) - best-effort
+    mdate = re.search(r'(?:anbudsfrist|frist)[:\s]*([0-3]?\d[./-][01]?\d[./-]\d{2,4})', txt, flags=re.I)
+    if mdate:
+        fields["tender_deadline"] = mdate.group(1).strip()
+
     return fields
 
 
@@ -698,7 +683,7 @@ def main():
     st.markdown("### 🔎 Inspeksjon (valgfritt)")
     ins_col1, ins_col2 = st.columns(2)
     with ins_col1:
-        uploaded_xlsx = st.file_uploader("Last opp Excel for inspeksjon (valgfritt)", type=["xlsx"])
+        uploaded_xlsx = st.file_uploader("Last opp Excel for inspeksjon (valgfritt)", type=["xlsx"], key="inspector_upload")
         if uploaded_xlsx:
             try:
                 info = {}
@@ -793,6 +778,39 @@ def main():
             st.error("❌ Ingen selskapsdata funnet. Velg et selskap fra listen eller last opp en PDF som inneholder selskapets informasjon.")
             st.stop()
 
+        # --- Ensure we have a company summary (wiki -> web -> brreg fallback) ---
+        company_summary = None
+        if st.session_state.get("company_summary"):
+            company_summary = st.session_state.company_summary
+
+        if not company_summary:
+            company_name = field_values.get("company_name") or ""
+            if company_name:
+                with st.spinner("Henter sammendrag fra Wikipedia..."):
+                    try:
+                        company_summary = _wiki_summary(company_name)
+                    except Exception:
+                        company_summary = None
+
+        if not company_summary:
+            try:
+                with st.spinner("Søker etter kort info på nettet..."):
+                    company_summary = _web_summary(field_values.get("company_name", "") or field_values.get("org_number", ""))
+            except Exception:
+                company_summary = None
+
+        if not company_summary:
+            try:
+                company_summary = create_summary_from_brreg_data(field_values)
+            except Exception:
+                company_summary = None
+
+        if company_summary:
+            st.session_state.company_summary = company_summary
+            field_values["company_summary"] = company_summary
+        else:
+            field_values["company_summary"] = ""
+
         st.session_state.extracted_data = field_values
 
         try:
@@ -818,6 +836,9 @@ def main():
                 st.markdown("**Oppdagede celler (debug)**")
                 df_dbg = pd.DataFrame(report["debug_cells"], columns=["sheet", "cell", "rgb_hex", "is_fillable", "near_label"])
                 st.dataframe(df_dbg)
+            if report.get("mapping"):
+                st.markdown("**Brukt mapping (første ark hvis relevant)**")
+                st.write(report["mapping"].get(list(report["mapping"].keys())[0]) if report["mapping"] else {})
             st.session_state.excel_ready = True
         except Exception as e:
             st.error(f"❌ Feil ved utfylling av Excel: {e}")
@@ -848,7 +869,7 @@ def main():
                 st.write(f"**NACE-bransje:** {nace_description}")
         with col_data2:
             if st.session_state.company_summary:
-                st.write("**Sammendrag (går i celle A2:D13):**")
+                st.write("**Sammendrag (går i celle A2:D13 / 'Om oss' / 'Skriv her') :**")
                 st.info(st.session_state.company_summary)
 
     # Download
