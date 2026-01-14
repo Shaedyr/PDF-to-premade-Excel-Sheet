@@ -24,12 +24,6 @@ for k in ('selected_company_data', 'companies_list', 'current_search', 'last_sea
         st.session_state[k] = None if k == 'selected_company_data' else [] if k == 'companies_list' else "" if k in ('current_search','last_search') else False
 
 # =========================
-# EXCEL CLOUD CONFIGURATION
-# =========================
-# Your Excel Cloud share link - DIRECTLY IN THE CODE
-EXCEL_CLOUD_SHARE_LINK = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?e=ccyPnQ"
-
-# =========================
 # HELPERS: SUMMARY (wiki/web/brreg)
 # =========================
 def _strip_suffix(name: str):
@@ -465,188 +459,72 @@ def extract_fields_from_pdf_bytes(pdf_bytes):
     return fields
 
 # =========================
-# EXCEL CLOUD TEMPLATE LOADER - DIRECT METHOD
+# SIMPLE TEMPLATE LOADER WITH UPLOAD
 # =========================
-def load_template_from_excel_cloud():
+def load_template():
     """
-    Direct method to load Excel from Excel Cloud
-    Uses browser-like headers and follows redirects
+    Simple template loader with upload option
     """
-    try:
-        # Your Excel Cloud share link
-        share_link = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?e=ccyPnQ"
-        
-        st.info(f"Using Excel Cloud link: {share_link}")
-        
-        # Method 1: Use the share link with a direct download trick
-        # OneDrive often redirects to a different URL that we need to follow
-        
-        # First, let's just try the link as-is with proper headers
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0"
-        }
-        
-        # Create a session to handle cookies and redirects
-        session = requests.Session()
-        
-        # First request to get redirect URL
-        st.info("Step 1: Following redirects...")
+    # First check if template is already loaded
+    if 'template_bytes' in st.session_state and st.session_state.template_bytes:
+        return st.session_state.template_bytes
+    
+    # Show upload option
+    st.warning("📝 Last opp Excel-malen din:")
+    
+    uploaded_file = st.file_uploader("Velg Excel-fil (.xlsx)", type=["xlsx"], key="template_uploader")
+    
+    if uploaded_file is not None:
         try:
-            initial_response = session.head(share_link, headers=headers, timeout=30, allow_redirects=True)
-            final_url = initial_response.url
-            st.info(f"Redirected to: {final_url}")
-        except:
-            # Try with GET if HEAD fails
-            initial_response = session.get(share_link, headers=headers, timeout=30, allow_redirects=True)
-            final_url = initial_response.url
-            st.info(f"Redirected to: {final_url}")
-        
-        # Method 2: Convert to direct download using known pattern
-        # Check if we got a onedrive.live.com URL
-        if "onedrive.live.com" in final_url:
-            # This is good, try to download directly
-            download_url = final_url
-            
-            # Replace view with download if needed
-            if "redir?" in download_url:
-                download_url = download_url.replace("redir?", "download?")
-            elif "?" in download_url and "download=1" not in download_url:
-                download_url += "&download=1"
-            elif "download=1" not in download_url:
-                download_url += "?download=1"
-        else:
-            # Try to construct direct download URL
-            # Extract share token from original URL
-            import base64
-            import urllib.parse
-            
-            # The share token is the long string after /c/
-            parts = share_link.split('/')
-            share_token = None
-            for i, part in enumerate(parts):
-                if part == 'c' and i + 1 < len(parts):
-                    share_token = parts[i + 1].split('?')[0]
-                    break
-            
-            if share_token:
-                # URL encode the share token
-                encoded_token = urllib.parse.quote(share_token)
-                download_url = f"https://api.onedrive.com/v1.0/shares/u!{encoded_token}/root/content"
-                st.info(f"Constructed API URL: {download_url}")
+            content = uploaded_file.read()
+            # Verify it's an Excel file
+            if content[:4] == b'PK\x03\x04':  # Excel .xlsx signature
+                st.session_state.template_bytes = content
+                st.session_state.template_loaded = True
+                st.success("✅ Excel-mal lastet!")
+                return content
             else:
-                download_url = share_link
-        
-        # Method 3: Try to download
-        st.info("Step 2: Downloading file...")
-        response = session.get(download_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
-        
-        st.info(f"Download response: HTTP {response.status_code}")
-        st.info(f"Content-Type: {response.headers.get('content-type', 'unknown')}")
-        
-        if response.status_code == 200:
-            # Read the content
-            content = b""
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    content += chunk
-            
-            st.info(f"Downloaded {len(content)} bytes")
-            
-            # Check if it's a valid Excel file
-            if len(content) > 1000:
-                # Check for Excel signatures
-                if content.startswith(b'PK') or content.startswith(b'\xD0\xCF\x11\xE0'):
-                    st.success(f"✅ Successfully downloaded Excel file ({len(content)} bytes)")
-                    return content
-                else:
-                    # Check what we actually got
-                    try:
-                        text_start = content[:500].decode('utf-8', errors='ignore').lower()
-                        if '<html' in text_start or '<!doctype' in text_start:
-                            st.error("❌ Got HTML instead of Excel. Showing first 500 chars:")
-                            st.code(text_start[:500])
-                            
-                            # Try to find download link in HTML
-                            if 'download' in text_start or '.xlsx' in text_start:
-                                # Try to extract download link from HTML
-                                soup = BeautifulSoup(content, 'html.parser')
-                                for link in soup.find_all('a', href=True):
-                                    href = link['href']
-                                    if '.xlsx' in href or 'download' in href.lower():
-                                        st.info(f"Found potential download link: {href}")
-                                        # Try this link
-                                        if href.startswith('http'):
-                                            dl_response = session.get(href, headers=headers, timeout=30)
-                                            if dl_response.status_code == 200:
-                                                dl_content = dl_response.content
-                                                if len(dl_content) > 1000 and (dl_content.startswith(b'PK') or dl_content.startswith(b'\xD0\xCF\x11\xE0')):
-                                                    st.success("✅ Got Excel from HTML link!")
-                                                    return dl_content
-                    except:
-                        pass
-                    
-                    st.error(f"❌ Not a valid Excel file. First 20 bytes hex: {content[:20].hex()}")
-            else:
-                st.error(f"❌ File too small ({len(content)} bytes)")
-        else:
-            st.error(f"❌ Download failed with HTTP {response.status_code}")
-            
-        # Method 4: Last resort - use the web viewer trick
-        st.info("Step 3: Trying web viewer method...")
-        web_viewer_url = "https://onedrive.live.com/download?resid=f5e2800feeb07258!107&authkey=!IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc"
-        
-        try:
-            viewer_response = session.get(web_viewer_url, headers=headers, timeout=30)
-            if viewer_response.status_code == 200:
-                viewer_content = viewer_response.content
-                if len(viewer_content) > 1000 and (viewer_content.startswith(b'PK') or viewer_content.startswith(b'\xD0\xCF\x11\xE0')):
-                    st.success("✅ Web viewer method worked!")
-                    return viewer_content
-        except:
-            pass
-            
-        return None
-        
-    except Exception as e:
-        st.error(f"❌ Error loading template: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
-        return None
+                st.error("❌ Filen er ikke en gyldig Excel-fil (.xlsx)")
+        except Exception as e:
+            st.error(f"❌ Feil ved lasting av fil: {str(e)}")
+    
+    return None
 
 # =========================
-# UI
+# UI - SIMPLIFIED VERSION
 # =========================
 def main():
     st.title("📄 PDF → Excel (Brønnøysund)")
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
     
-    # Debug info in sidebar
-    with st.sidebar:
-        st.markdown("### 🔧 Debug Info")
-        if st.button("Test Excel Cloud Connection"):
-            st.info(f"Share link: {EXCEL_CLOUD_SHARE_LINK[:60]}...")
-            try:
-                test_response = requests.get(EXCEL_CLOUD_SHARE_LINK, timeout=10)
-                st.write(f"Test response: HTTP {test_response.status_code}")
-                st.write(f"Redirected to: {test_response.url}")
-            except Exception as e:
-                st.error(f"Test error: {str(e)}")
+    # =========================
+    # STEP 1: LOAD TEMPLATE (SIMPLIFIED)
+    # =========================
+    if 'template_loaded' not in st.session_state:
+        st.session_state.template_loaded = False
     
-    c1,c2 = st.columns(2)
+    if not st.session_state.template_loaded:
+        st.markdown("### 📋 Steg 1: Last opp Excel-mal")
+        st.info("Last opp Excel-malen din først. Denne vil bli lagret for denne økten.")
+        
+        template_content = load_template()
+        
+        if template_content:
+            st.session_state.template_bytes = template_content
+            st.session_state.template_loaded = True
+            st.success("✅ Klar til å prosessere!")
+        else:
+            st.stop()  # Stop here until template is loaded
+    
+    # =========================
+    # STEP 2: COMPANY DATA
+    # =========================
+    st.markdown("### 🔍 Steg 2: Finn selskapsdata")
+    
+    c1, c2 = st.columns(2)
     with c1:
-        pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf")
+        pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf", key="pdf_upload")
     with c2:
         q = st.text_input("Selskapsnavn *", placeholder="Skriv her... (minst 2 bokstaver)", key="company_search_input")
         if st.session_state.get('current_search','') != q:
@@ -665,111 +543,57 @@ def main():
                     st.session_state.selected_company_data = format_brreg_data(cd[sel]); st.success(f"✅ Valgt: {cd[sel].get('navn')}")
                 else:
                     if len(q.strip())>=3: st.warning("Vennligst velg et selskap fra listen")
+    
     st.markdown("---")
     
     # =========================
-    # EXCEL CLOUD TEMPLATE LOADING
+    # STEP 3: PROCESS BUTTON
     # =========================
-    if 'template_loaded' not in st.session_state:
-        with st.spinner("📥 Laster Excel-mal fra Excel Cloud..."):
-            tb = load_template_from_excel_cloud()
-            
-            if tb:
-                st.session_state.template_bytes = tb
-                st.session_state.template_loaded = True
-                st.success("✅ Excel-mal lastet fra Excel Cloud")
-            else:
-                st.session_state.template_loaded = False
-                st.error("""
-                ❌ Kunne ikke laste Excel-mal
-                
-                **Løsning:**
-                1. Åpne Excel-filen i Excel Cloud
-                2. Klikk "Lagre en kopi" og last den ned
-                3. Last opp den nedlastede filen her som en midlertidig løsning
-                """)
-    
-    st.markdown("---")
-    st.markdown("### 🔎 Inspeksjon (valgfritt)")
-    a,b = st.columns(2)
-    with a:
-        uploaded = st.file_uploader("Last opp Excel for inspeksjon (valgfritt)", type=["xlsx"], key="inspector_upload")
-        if uploaded:
-            try:
-                data = uploaded.read(); wb = load_workbook(BytesIO(data), data_only=True)
-                info = {"sheets": wb.sheetnames, "sheet_title": wb.worksheets[0].title, "A2": (wb.worksheets[0]["A2"].value or "")[:1000]}
-                dbg=[]; wb_full = load_workbook(BytesIO(data), data_only=False)
-                for w in wb_full.worksheets:
-                    for row in w.iter_rows():
-                        for c in row:
-                            try:
-                                fg = getattr(c.fill,"fgColor",None) or getattr(c.fill,"start_color",None)
-                                hexcol = _rgb_hex_from_color(fg)
-                                if hexcol: dbg.append((w.title,c.coordinate,hexcol, True if hexcol.upper()==TARGET_FILL_HEX else False))
-                            except Exception:
-                                continue
-                info["detected_colors_sample"]=dbg[:400]; st.json(info)
-            except Exception as e:
-                st.error(f"Kunne ikke lese filen: {e}")
-    with b:
-        if st.button("Vis lastet mal (om tilgjengelig)"):
-            tb = st.session_state.get("template_bytes")
-            if not tb: st.warning("Ingen mal lastet.")
-            else:
-                try:
-                    wb = load_workbook(BytesIO(tb), data_only=True)
-                    info = {"sheets": wb.sheetnames, "A2": (wb.worksheets[0]["A2"].value or "")[:1000]}
-                    wb_full = load_workbook(BytesIO(tb), data_only=False); dbg=[]
-                    w = wb_full.worksheets[0]
-                    for row in w.iter_rows():
-                        for c in row:
-                            try:
-                                fg = getattr(c.fill,"fgColor",None) or getattr(c.fill,"start_color",None)
-                                hexcol = _rgb_hex_from_color(fg)
-                                if hexcol: dbg.append((w.title,c.coordinate,hexcol, True if hexcol.upper()==TARGET_FILL_HEX else False))
-                            except Exception:
-                                continue
-                    info["first_sheet_color_sample"]=dbg[:400]; st.json(info)
-                except Exception as e:
-                    st.error(f"Feil ved inspeksjon av mal: {e}")
-    st.markdown("---")
-    if st.button("🚀 Prosesser & Oppdater Excel", use_container_width=True):
-        if not st.session_state.get('template_loaded'): st.error("❌ Excel-mal ikke tilgjengelig"); st.stop()
+    if st.button("🚀 Prosesser & Oppdater Excel", use_container_width=True, type="primary"):
+        if not st.session_state.get('template_loaded'):
+            st.error("❌ Excel-mal ikke tilgjengelig"); return
+        
         field_values = {}
+        
+        # Add selected company data
         if st.session_state.selected_company_data:
             field_values.update(st.session_state.selected_company_data)
-        # PDF extraction (use only to fill missing fields)
+        
+        # Extract from PDF if provided
         if pdf_file:
             try:
                 pdf_bytes = pdf_file.read()
                 extracted = extract_fields_from_pdf_bytes(pdf_bytes)
+                
+                # Use org number from PDF to fetch more data
                 if "org_number" in extracted:
                     br = fetch_brreg_by_org(extracted["org_number"])
                     if br:
                         br_data = format_brreg_data(br)
                         for k,v in br_data.items():
                             if v: field_values[k]=v
-                        for k,v in extracted.items():
-                            if v and not field_values.get(k): field_values[k]=v
-                    else:
-                        for k,v in extracted.items():
-                            if v and not field_values.get(k): field_values[k]=v
-                else:
-                    for k,v in extracted.items():
-                        if v and not field_values.get(k): field_values[k]=v
+                
+                # Add any other extracted fields
+                for k,v in extracted.items():
+                    if v and not field_values.get(k): field_values[k]=v
+                    
             except Exception as e:
                 st.error(f"❌ Feil ved PDF-parsing: {e}")
+        
         if not field_values:
-            st.error("❌ Ingen selskapsdata funnet."); st.stop()
-        # If revenue missing, try Proff.no
+            st.error("❌ Ingen selskapsdata funnet."); return
+        
+        # Try to get revenue
         if not field_values.get("revenue_2024"):
             rev = fetch_proff_revenue(field_values.get("company_name",""), field_values.get("org_number",""))
             if rev: field_values["revenue_2024"]=rev
-        # summary (prefer brreg selection then wiki/web then brreg fallback)
+        
+        # Create summary
         company_summary = None
         brreg_like = st.session_state.get("selected_company_data") or {}
         if brreg_like:
             company_summary = create_summary_from_brreg_data(brreg_like)
+        
         if not company_summary or (isinstance(company_summary,str) and len(company_summary)<40):
             name = field_values.get("company_name","") or ""
             if name:
@@ -777,72 +601,88 @@ def main():
                     company_summary = _wiki_summary(name, prefer_name=name)
                 except Exception:
                     company_summary = None
+        
         if not company_summary or (isinstance(company_summary,str) and len(company_summary)<40):
             try:
                 company_summary = _web_summary(field_values.get("company_name","") or field_values.get("org_number",""))
             except Exception:
                 company_summary = None
+        
         if not company_summary:
             company_summary = create_summary_from_brreg_data(field_values)
+        
         field_values["company_summary"] = company_summary or ""
         st.session_state.company_summary = company_summary or ""
         st.session_state.extracted_data = field_values
+        
+        # Fill Excel
         try:
             updated_bytes, report = fill_workbook_bytes(st.session_state.template_bytes, field_values)
             st.session_state.excel_bytes = updated_bytes
-            if report["errors"]:
-                st.error("Noen celler kunne ikke fylles. Se detaljer under.")
-                for err in report["errors"]: st.write(err)
-            if report["skipped"]:
-                st.warning("Noen felter ble hoppet over:")
-                for s in report["skipped"]: st.write(s)
-            if report["unmapped_cells"]:
-                st.info("Fylleceller uten entydig label:")
-                for um in report["unmapped_cells"]: st.write(um)
-            if report["filled"]: st.success(f"✅ Fylte {len(report['filled'])} celler.")
-            else: st.warning("Kunne ikke fylle noen celler — sjekk malen.")
-            if report.get("debug_cells"):
-                st.markdown("**Oppdagede celler (debug)**")
-                df_dbg = pd.DataFrame(report["debug_cells"], columns=["sheet","cell","rgb_hex","is_fillable","near_label"])
-                st.dataframe(df_dbg)
-            if report.get("mapping"):
-                st.markdown("**Brukt mapping (første ark hvis relevant)**")
-                first = list(report["mapping"].keys())[0] if report["mapping"] else None
-                st.write(report["mapping"].get(first) if first else {})
-            st.session_state.excel_ready = True
+            
+            # Show results
+            if report["filled"]:
+                st.success(f"✅ Fylte {len(report['filled'])} celler i Excel-malen")
+                st.session_state.excel_ready = True
+            else:
+                st.warning("⚠️ Ingen celler ble fylt. Sjekk at malen har riktig format.")
+                
+            # Show extracted data
+            if field_values:
+                st.markdown("---")
+                st.subheader("📊 Ekstraherte data")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Selskapsnavn:** {field_values.get('company_name', '')}")
+                    st.write(f"**Organisasjonsnummer:** {field_values.get('org_number', '')}")
+                    st.write(f"**Adresse:** {field_values.get('address', '')}")
+                    st.write(f"**Postnummer:** {field_values.get('post_nr', '')}")
+                    st.write(f"**Poststed:** {field_values.get('city', '')}")
+                
+                with col2:
+                    st.write(f"**Antall ansatte:** {field_values.get('employees', '')}")
+                    st.write(f"**Hjemmeside:** {field_values.get('homepage', '')}")
+                    st.write(f"**Omsetning 2024:** {field_values.get('revenue_2024', '')}")
+                    if company_summary:
+                        st.write("**Sammendrag:**")
+                        st.info(company_summary[:500] + ("..." if len(company_summary) > 500 else ""))
+                        
         except Exception as e:
-            st.error(f"❌ Feil ved utfylling av Excel: {e}"); st.session_state.excel_ready=False
-
-    # display
-    if st.session_state.extracted_data:
-        st.markdown("---"); st.subheader("📋 Ekstraherte data")
-        d1,d2 = st.columns(2)
-        with d1:
-            d = st.session_state.extracted_data
-            st.write(f"**Selskapsnavn:** {d.get('company_name','')}")
-            st.write(f"**Organisasjonsnummer:** {d.get('org_number','')}")
-            st.write(f"**Adresse:** {d.get('address','')}")
-            st.write(f"**Postnummer:** {d.get('post_nr','')}")
-            st.write(f"**Poststed:** {d.get('city','')}")
-            st.write(f"**Antall ansatte:** {d.get('employees','')}")
-            st.write(f"**Hjemmeside:** {d.get('homepage','')}")
-            nc, nd = d.get('nace_code',''), d.get('nace_description','')
-            if nc and nd: st.write(f"**NACE-bransje/nummer:** {nd} ({nc})")
-            elif nc: st.write(f"**NACE-nummer:** {nc}")
-            elif nd: st.write(f"**NACE-bransje:** {nd}")
-        with d2:
-            if st.session_state.company_summary:
-                st.write("**Sammendrag (går i celle A2:D13 / 'Om oss' / 'Skriv her') :**")
-                st.info(st.session_state.company_summary)
-    # download
+            st.error(f"❌ Feil ved utfylling av Excel: {e}")
+            st.session_state.excel_ready = False
+    
+    # =========================
+    # STEP 4: DOWNLOAD
+    # =========================
     if st.session_state.get('excel_ready') and st.session_state.get('excel_bytes'):
-        st.markdown("---"); st.subheader("📥 Last ned")
-        cname = st.session_state.extracted_data.get('company_name','selskap')
-        safe = re.sub(r'[^\w\s-]','', cname, flags=re.UNICODE); safe = re.sub(r'[-\s]+','_', safe)
-        st.download_button(label="⬇️ Last ned oppdatert Excel", data=st.session_state.excel_bytes,
-                           file_name=f"{safe}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    st.markdown("---"); st.caption("Drevet av Brønnøysund Enhetsregisteret API | Excel-mal lastet fra Excel Cloud")
+        st.markdown("---")
+        st.subheader("📥 Last ned ferdig Excel-fil")
+        
+        cname = st.session_state.extracted_data.get('company_name', 'selskap')
+        safe = re.sub(r'[^\w\s-]', '', cname, flags=re.UNICODE)
+        safe = re.sub(r'[-\s]+', '_', safe)
+        
+        st.download_button(
+            label="⬇️ Last ned oppdatert Excel",
+            data=st.session_state.excel_bytes,
+            file_name=f"{safe}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    
+    # =========================
+    # RESET BUTTON
+    # =========================
+    st.markdown("---")
+    if st.button("🔄 Start på nytt (fjern mal)", type="secondary"):
+        for key in ['template_loaded', 'template_bytes', 'excel_ready', 'excel_bytes', 'extracted_data', 'selected_company_data']:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+    
+    st.markdown("---")
+    st.caption("Drevet av Brønnøysund Enhetsregisteret API")
 
 if __name__ == "__main__":
     main()
