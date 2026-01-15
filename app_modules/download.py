@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import datetime
 
+
 def download_excel_file(excel_bytes, company_name="Selskap"):
     """
     Displays a download button for the final Excel file.
@@ -26,3 +27,12 @@ def download_excel_file(excel_bytes, company_name="Selskap"):
     )
 
     st.success("Excel-filen er klar for nedlasting!")
+
+
+# ---------------------------------------------------------
+# PAGE VIEW (so it works as a selectable page)
+# ---------------------------------------------------------
+def run():
+    st.title("📥 Download Excel")
+    st.write("Denne siden viser nedlastingsfunksjonen.")
+    st.info("Excel-filen genereres på hovedsiden og lastes ned her.")
