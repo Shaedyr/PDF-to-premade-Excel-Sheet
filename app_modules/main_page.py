@@ -1,7 +1,7 @@
 import streamlit as st
 
 from app_modules.input import get_user_inputs
-from app_modules.template_loader import load_template_secure
+from app_modules.template_loader import load_template
 from app_modules.company_data import fetch_company_by_org, format_company_data
 from app_modules.summary import generate_company_summary
 from app_modules.pdf_parser import extract_fields_from_pdf
@@ -24,10 +24,10 @@ def run():
         return
 
     # ---------------------------------------------------------
-    # STEP 2: LOAD TEMPLATE (SECURE)
+    # STEP 2: LOAD TEMPLATE (DIRECT ONEDRIVE LINK)
     # ---------------------------------------------------------
     if "template_bytes" not in st.session_state:
-        st.session_state.template_bytes = load_template_secure()
+        st.session_state.template_bytes = load_template()
 
     template_bytes = st.session_state.template_bytes
 
