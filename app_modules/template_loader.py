@@ -19,14 +19,12 @@ def _convert_onedrive_url(url: str) -> str:
 
         # If redirected to SharePoint
         if "sharepoint.com" in final_url:
-            # Convert /forms/ link to /download?download=1
             if "/forms/" in final_url:
                 return final_url.replace("/forms/", "/download?") + "&download=1"
             return final_url + "?download=1"
 
         # If still a OneDrive short link
         if "1drv.ms" in url:
-            # Extract share ID
             import re
             match = re.search(r'/([A-Za-z0-9_\-!]+)$', url)
             if match:
@@ -34,7 +32,6 @@ def _convert_onedrive_url(url: str) -> str:
                 encoded = requests.utils.quote(share_id, safe='')
                 return f"https://api.onedrive.com/v1.0/shares/u!{encoded}/root/content"
 
-        # Fallback
         return url + "?download=1"
 
     except Exception:
@@ -74,3 +71,12 @@ def load_template_from_onedrive():
     except Exception as e:
         st.error(f"❌ Kunne ikke laste Excel-malen fra OneDrive: {e}")
         st.stop()
+
+
+# ---------------------------------------------------------
+# PAGE VIEW (so it works as a selectable page)
+# ---------------------------------------------------------
+def run():
+    st.title("📁 Template Loader")
+    st.write("Denne modulen laster Excel-malen fra OneDrive.")
+    st.info("Brukes av hovedsiden for å hente Excel-malen.")
