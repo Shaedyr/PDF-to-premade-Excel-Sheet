@@ -1,3 +1,4 @@
+import streamlit as st
 import pdfplumber
 import re
 from io import BytesIO
@@ -119,3 +120,12 @@ def extract_fields_from_pdf(pdf_bytes: bytes) -> dict:
         fields["tender_deadline"] = mdate.group(1).strip()
 
     return fields
+
+
+# ---------------------------------------------------------
+# PAGE VIEW (so it works as a selectable page)
+# ---------------------------------------------------------
+def run():
+    st.title("📄 PDF Parser Module")
+    st.write("Dette modulen ekstraherer tekst og felter fra PDF-dokumenter.")
+    st.info("Brukes av hovedsiden for å hente data fra PDF.")
