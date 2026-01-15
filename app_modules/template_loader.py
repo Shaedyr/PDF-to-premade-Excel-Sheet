@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # Direct OneDrive download link (your working link)
-TEMPLATE_URL = (
-    "https://onedrive.live.com/personal/f5e2800feeb07258/"
-    "_layouts/15/download.aspx?UniqueId=d128a89f-c2ac-495d-9e1e-a17ad5de4f00"
+TEMPLATE_URL = "https://onedrive.live.com/download?resid=F5E2800FEEB07258!sd128a89fc2ac495d9e1ea17ad5de4f00&authkey=!K0HaUp"
 )
 
 def load_template():
