@@ -19,7 +19,9 @@ def get_user_inputs():
 
     col1, col2 = st.columns(2)
 
+    # ---------------------------------------------------------
     # PDF upload
+    # ---------------------------------------------------------
     with col1:
         pdf_file = st.file_uploader(
             "PDF dokument (valgfritt)",
@@ -28,7 +30,9 @@ def get_user_inputs():
         )
         pdf_bytes = pdf_file.read() if pdf_file else None
 
+    # ---------------------------------------------------------
     # Company search
+    # ---------------------------------------------------------
     with col2:
         query = st.text_input(
             "Selskapsnavn *",
