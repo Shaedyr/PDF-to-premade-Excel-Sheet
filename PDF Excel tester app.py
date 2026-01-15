@@ -143,45 +143,100 @@ def format_brreg_data(api_data):
     return out
 
 # =========================
-# EXCEL: color/mapping/filling
+# EXCEL: TEMPLATE LOADING AND FILLING
 # =========================
 TARGET_FILL_HEX = "F2F2F2"
 
-def load_template_from_github(force_refresh=False):
-    """Load Excel template from GitHub with real-time update capability"""
-    if not force_refresh and 'template_github_url' in st.session_state:
-        cache_time = st.session_state.get('template_cache_time', 0)
-        if datetime.now().timestamp() - cache_time < 3600:
-            return st.session_state.get('template_bytes')
-    
+def convert_onedrive_link(onedrive_url):
+    """Convert OneDrive shared link to direct download link"""
     try:
-        github_urls = [
+        # If it's already a direct download link, return as is
+        if "download=1" in onedrive_url:
+            return onedrive_url
+            
+        # Handle OneDrive short links (1drv.ms)
+        if "1drv.ms" in onedrive_url:
+            # Follow redirects to get the actual link
+            session = requests.Session()
+            response = session.head(onedrive_url, allow_redirects=True)
+            onedrive_url = response.url
+        
+        # Convert to direct download link
+        if "sharepoint.com" in onedrive_url or "1drv.ms" in onedrive_url or "onedrive.live.com" in onedrive_url:
+            # Replace with download parameter
+            onedrive_url = onedrive_url.replace("?web=1", "").replace("/redir?", "/download?")
+            if "download" not in onedrive_url:
+                if "?" in onedrive_url:
+                    onedrive_url += "&download=1"
+                else:
+                    onedrive_url += "?download=1"
+        
+        return onedrive_url
+    except Exception as e:
+        st.error(f"Feil ved konvertering av OneDrive-lenke: {e}")
+        return None
+
+def load_template_from_url(template_url=None, force_refresh=False):
+    """Load Excel template from a shared URL"""
+    if not template_url:
+        # Default fallback URLs
+        fallback_urls = [
             "https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/PremadeExcelTemplate.xlsx",
             "https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/Grundmall.xlsx"
         ]
         
-        template_bytes = None
-        
-        for url in github_urls:
+        for url in fallback_urls:
             try:
                 response = requests.get(url, timeout=30)
                 if response.status_code == 200:
-                    template_bytes = response.content
-                    st.session_state.template_github_url = url
-                    st.session_state.template_cache_time = datetime.now().timestamp()
-                    break
+                    return response.content
             except:
                 continue
         
-        if not template_bytes and os.path.exists("Grundmall.xlsx"):
+        # Try local file as last resort
+        if os.path.exists("Grundmall.xlsx"):
             with open("Grundmall.xlsx", "rb") as f:
-                template_bytes = f.read()
+                return f.read()
         
-        if template_bytes:
-            st.session_state.template_bytes = template_bytes
-            return template_bytes
+        return None
+    
+    try:
+        # Check cache first (unless force refresh)
+        if not force_refresh and 'template_cache' in st.session_state:
+            cache_time = st.session_state.get('template_cache_time', 0)
+            if datetime.now().timestamp() - cache_time < 300:  # 5 minute cache
+                return st.session_state.template_cache
+        
+        # Convert OneDrive link if needed
+        download_url = convert_onedrive_link(template_url)
+        if not download_url:
+            return None
+        
+        # Download the template
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(download_url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            template_bytes = response.content
+            
+            # Verify it's a valid Excel file
+            try:
+                load_workbook(BytesIO(template_bytes))
+                
+                # Cache the template
+                st.session_state.template_cache = template_bytes
+                st.session_state.template_cache_time = datetime.now().timestamp()
+                st.session_state.template_url = template_url
+                
+                return template_bytes
+            except Exception as e:
+                st.error(f"Lastet fil er ikke en gyldig Excel-fil: {e}")
+                return None
         else:
-            st.error("❌ Kunne ikke laste Excel-malen")
+            st.error(f"Kunne ikke laste mal fra URL. Status: {response.status_code}")
             return None
             
     except Exception as e:
@@ -426,25 +481,29 @@ def main():
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
     
+    # OneDrive template URL (YOUR LINK)
+    ONEDRIVE_TEMPLATE_URL = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc"
+    
+    # Template URL input section
+    st.markdown("### 📋 Excel-mal konfigurasjon")
+    col_url1, col_url2 = st.columns([3, 1])
+    
+    with col_url1:
+        template_url = st.text_input(
+            "Excel-mal URL (OneDrive/Google Drive):",
+            value=ONEDRIVE_TEMPLATE_URL,
+            help="Lim inn lenken til Excel-malen din",
+            key="template_url_input"
+        )
+    
+    with col_url2:
+        refresh_clicked = st.button("🔄 Last mal", key="load_template_btn", use_container_width=True)
+    
+    # Main content columns
     c1, c2 = st.columns(2)
     
     with c1:
         pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf", help="Last opp PDF for referanse")
-        
-        # Refresh template button
-        st.markdown("---")
-        col_refresh1, col_refresh2 = st.columns([3, 1])
-        with col_refresh1:
-            st.markdown("**Excel-mal:**")
-        with col_refresh2:
-            if st.button("🔄 Oppdater", key="refresh_template", help="Last malen på nytt fra GitHub"):
-                with st.spinner("Oppdaterer mal..."):
-                    new_template = load_template_from_github(force_refresh=True)
-                    if new_template:
-                        st.success("✅ Mal oppdatert!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Kunne ikke oppdatere mal")
     
     with c2:
         q = st.text_input("Selskapsnavn *", placeholder="Skriv her... (minst 2 bokstaver)", key="company_search_input")
@@ -469,83 +528,38 @@ def main():
 
     st.markdown("---")
     
-    # Load Excel template with real-time capability
-    if 'template_loaded' not in st.session_state:
-        with st.spinner("Laster Excel-mal fra GitHub..."):
-            tb = load_template_from_github()
+    # Load Excel template
+    if 'template_loaded' not in st.session_state or refresh_clicked:
+        with st.spinner("Laster Excel-mal fra OneDrive..."):
+            tb = load_template_from_url(template_url, force_refresh=refresh_clicked)
             if tb:
                 st.session_state.template_bytes = tb
                 st.session_state.template_loaded = True
-                st.success("✅ Excel-mal lastet fra GitHub")
+                st.success("✅ Excel-mal lastet fra OneDrive!")
                 
                 # Show template info
                 try:
                     wb = load_workbook(BytesIO(tb), data_only=True)
                     sheet_name = wb.sheetnames[0] if wb.sheetnames else "Ukjent"
-                    st.info(f"**Mal info:** Arknavn: '{sheet_name}' | Sist oppdatert: {datetime.now().strftime('%H:%M:%S')}")
+                    st.info(f"**Mal info:** Arknavn: '{sheet_name}' | Lastet: {datetime.now().strftime('%H:%M:%S')}")
                 except:
                     pass
             else:
                 st.session_state.template_loaded = False
-                st.error("❌ Kunne ikke laste Excel-mal")
-    else:
-        # Template is already loaded, but we can show status
-        if st.session_state.get('template_github_url'):
-            try:
-                st.info(f"📋 Mal lastet fra: {st.session_state.template_github_url}")
-            except:
-                pass
-
-    # Inspector
-    st.markdown("---"); st.markdown("### 🔎 Inspeksjon (valgfritt)")
-    a,b = st.columns(2)
-    with a:
-        uploaded = st.file_uploader("Last opp Excel for inspeksjon (valgfritt)", type=["xlsx"], key="inspector_upload")
-        if uploaded:
-            try:
-                data = uploaded.read(); wb = load_workbook(BytesIO(data), data_only=True)
-                info = {"sheets": wb.sheetnames, "sheet_title": wb.worksheets[0].title, "A2": (wb.worksheets[0]["A2"].value or "")[:1000]}
-                dbg=[]; wb_full = load_workbook(BytesIO(data), data_only=False)
-                for w in wb_full.worksheets:
-                    for row in w.iter_rows():
-                        for c in row:
-                            try:
-                                fg = getattr(c.fill,"fgColor",None) or getattr(c.fill,"start_color",None)
-                                hexcol = _rgb_hex_from_color(fg)
-                                if hexcol: dbg.append((w.title,c.coordinate,hexcol, True if hexcol.upper()==TARGET_FILL_HEX else False))
-                            except Exception:
-                                continue
-                info["detected_colors_sample"]=dbg[:400]; st.json(info)
-            except Exception as e:
-                st.error(f"Kunne ikke lese filen: {e}")
-    with b:
-        if st.button("Vis lastet mal (om tilgjengelig)"):
-            tb = st.session_state.get("template_bytes")
-            if not tb: st.warning("Ingen mal lastet.")
-            else:
-                try:
-                    wb = load_workbook(BytesIO(tb), data_only=True)
-                    info = {"sheets": wb.sheetnames, "A2": (wb.worksheets[0]["A2"].value or "")[:1000]}
-                    wb_full = load_workbook(BytesIO(tb), data_only=False); dbg=[]
-                    w = wb_full.worksheets[0]
-                    for row in w.iter_rows():
-                        for c in row:
-                            try:
-                                fg = getattr(c.fill,"fgColor",None) or getattr(c.fill,"start_color",None)
-                                hexcol = _rgb_hex_from_color(fg)
-                                if hexcol: dbg.append((w.title,c.coordinate,hexcol, True if hexcol.upper()==TARGET_FILL_HEX else False))
-                            except Exception:
-                                continue
-                    info["first_sheet_color_sample"]=dbg[:400]; st.json(info)
-                except Exception as e:
-                    st.error(f"Feil ved inspeksjon av mal: {e}")
+                st.error("❌ Kunne ikke laste Excel-mal. Sjekk lenken.")
+    elif st.session_state.get('template_loaded'):
+        st.info("✅ Excel-mal er allerede lastet. Klikk 'Last mal' for å oppdatere.")
 
     st.markdown("---")
     if st.button("🚀 Prosesser & Oppdater Excel", use_container_width=True):
-        if not st.session_state.get('template_loaded'): st.error("❌ Excel-mal ikke tilgjengelig"); st.stop()
+        if not st.session_state.get('template_loaded'): 
+            st.error("❌ Excel-mal ikke tilgjengelig")
+            st.stop()
+        
         field_values = {}
         if st.session_state.selected_company_data:
             field_values.update(st.session_state.selected_company_data)
+        
         if pdf_file:
             try:
                 pdf_bytes = pdf_file.read()
@@ -566,9 +580,10 @@ def main():
                 st.error(f"❌ Feil ved PDF-parsing: {e}")
 
         if not field_values:
-            st.error("❌ Ingen selskapsdata funnet."); st.stop()
+            st.error("❌ Ingen selskapsdata funnet.")
+            st.stop()
 
-        # summary: prefer brreg, then wiki (strict), then web, then generated brreg summary
+        # Get company summary
         company_summary = None
         brreg_like = st.session_state.get("selected_company_data") or {}
         if brreg_like:
@@ -587,6 +602,7 @@ def main():
                 company_summary = None
         if not company_summary:
             company_summary = create_summary_from_brreg_data(field_values)
+        
         field_values["company_summary"] = company_summary or ""
         st.session_state.company_summary = company_summary or ""
         st.session_state.extracted_data = field_values
@@ -594,32 +610,27 @@ def main():
         try:
             updated_bytes, report = fill_workbook_bytes(st.session_state.template_bytes, field_values)
             st.session_state.excel_bytes = updated_bytes
+            
+            if report["filled"]: 
+                st.success(f"✅ Fylte {len(report['filled'])} celler i Excel-malen.")
+            else: 
+                st.warning("Kunne ikke fylle noen celler — sjekk malstrukturen.")
+            
             if report["errors"]:
-                st.error("Noen celler kunne ikke fylles. Se detaljer under.")
-                for err in report["errors"]: st.write(err)
-            if report["skipped"]:
-                st.warning("Noen felter ble hoppet over:")
-                for s in report["skipped"]: st.write(s)
-            if report["unmapped_cells"]:
-                st.info("Fylleceller uten entydig label:")
-                for um in report["unmapped_cells"]: st.write(um)
-            if report["filled"]: st.success(f"✅ Fylte {len(report['filled'])} celler.")
-            else: st.warning("Kunne ikke fylle noen celler — sjekk malen.")
-            if report.get("debug_cells"):
-                st.markdown("**Oppdagede celler (debug)**")
-                df_dbg = pd.DataFrame(report["debug_cells"], columns=["sheet","cell","rgb_hex","is_fillable","near_label"])
-                st.dataframe(df_dbg)
-            if report.get("mapping"):
-                st.markdown("**Brukt mapping (første ark hvis relevant)**")
-                first = list(report["mapping"].keys())[0] if report["mapping"] else None
-                st.write(report["mapping"].get(first) if first else {})
+                st.error("Noen celler kunne ikke fylles:")
+                for err in report["errors"][:3]:  # Show only first 3 errors
+                    st.write(f"- {err}")
+            
             st.session_state.excel_ready = True
+            
         except Exception as e:
-            st.error(f"❌ Feil ved utfylling av Excel: {e}"); st.session_state.excel_ready=False
+            st.error(f"❌ Feil ved utfylling av Excel: {e}")
+            st.session_state.excel_ready = False
 
     # Display extracted data
     if st.session_state.extracted_data:
-        st.markdown("---"); st.subheader("📋 Ekstraherte data")
+        st.markdown("---")
+        st.subheader("📋 Ekstraherte data")
         d1,d2 = st.columns(2)
         with d1:
             d = st.session_state.extracted_data
@@ -631,23 +642,37 @@ def main():
             st.write(f"**Antall ansatte:** {d.get('employees','')}")
             st.write(f"**Hjemmeside:** {d.get('homepage','')}")
             nc, nd = d.get('nace_code',''), d.get('nace_description','')
-            if nc and nd: st.write(f"**NACE-bransje/nummer:** {nd} ({nc})")
-            elif nc: st.write(f"**NACE-nummer:** {nc}")
-            elif nd: st.write(f"**NACE-bransje:** {nd}")
+            if nc and nd: 
+                st.write(f"**NACE-bransje/nummer:** {nd} ({nc})")
+            elif nc: 
+                st.write(f"**NACE-nummer:** {nc}")
+            elif nd: 
+                st.write(f"**NACE-bransje:** {nd}")
+        
         with d2:
             if st.session_state.company_summary:
-                st.write("**Sammendrag (går i celle A2:D13 / 'Om oss' / 'Skriv her') :**")
+                st.write("**Sammendrag (går i 'Om oss' / 'Skriv her' celle):**")
                 st.info(st.session_state.company_summary)
 
     # Download
     if st.session_state.get('excel_ready') and st.session_state.get('excel_bytes'):
-        st.markdown("---"); st.subheader("📥 Last ned")
+        st.markdown("---")
+        st.subheader("📥 Last ned ferdig Excel-fil")
         cname = st.session_state.extracted_data.get('company_name','selskap')
-        safe = re.sub(r'[^\w\s-]','', cname, flags=re.UNICODE); safe = re.sub(r'[-\s]+','_', safe)
-        st.download_button(label="⬇️ Last ned oppdatert Excel", data=st.session_state.excel_bytes,
-                           file_name=f"{safe}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    st.markdown("---"); st.caption("Drevet av Brønnøysund Enhetsregisteret API | Data mellomlagret i 1 time")
+        safe = re.sub(r'[^\w\s-]','', cname, flags=re.UNICODE)
+        safe = re.sub(r'[-\s]+','_', safe)
+        
+        st.download_button(
+            label="⬇️ Last ned oppdatert Excel",
+            data=st.session_state.excel_bytes,
+            file_name=f"{safe}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
+    
+    st.markdown("---")
+    st.caption("Drevet av Brønnøysund Enhetsregisteret API | Excel-mal lastet fra OneDrive")
 
 if __name__ == "__main__":
     main()
