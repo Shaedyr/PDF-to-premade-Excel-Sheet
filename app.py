@@ -24,18 +24,14 @@ PAGES = {
     "📥 Download": download,
 }
 
-
 def main():
     st.set_page_config(page_title="PDF → Excel Automator", layout="wide")
 
-    # Sidebar navigation
     st.sidebar.title("Navigasjon")
     choice = st.sidebar.radio("Velg side:", list(PAGES.keys()))
 
-    # Run selected page
     page = PAGES[choice]
     page.run()
-
 
 if __name__ == "__main__":
     main()
