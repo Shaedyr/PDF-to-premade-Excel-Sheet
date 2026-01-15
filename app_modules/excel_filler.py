@@ -131,3 +131,13 @@ def fill_excel(template_bytes, field_values, summary_text):
     wb.save(out)
     out.seek(0)
     return out.getvalue()
+
+
+# ---------------------------------------------------------
+# PAGE VIEW (so it works as a selectable page)
+# ---------------------------------------------------------
+def run():
+    import streamlit as st
+    st.title("📊 Excel Filler Module")
+    st.write("Dette er et backend-modul som fyller Excel-malen.")
+    st.info("Brukes av hovedsiden for å generere ferdig Excel.")
