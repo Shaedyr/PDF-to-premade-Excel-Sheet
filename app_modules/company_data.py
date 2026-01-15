@@ -1,3 +1,4 @@
+import streamlit as st
 import requests
 
 BRREG_SEARCH_URL = "https://data.brreg.no/enhetsregisteret/api/enheter"
@@ -88,3 +89,12 @@ def format_company_data(api_data):
         out["nace_description"] = nace.get("beskrivelse", "")
 
     return out
+
+
+# ---------------------------------------------------------
+# OPTIONAL PAGE VIEW (for debugging or standalone testing)
+# ---------------------------------------------------------
+def run():
+    st.title("🔍 Company Data Module")
+    st.write("Dette er et backend-modul og brukes av andre sider.")
+    st.info("Ingen interaktiv funksjon her. Brukes av Input- og Summary-moduler.")
