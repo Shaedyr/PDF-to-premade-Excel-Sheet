@@ -147,67 +147,75 @@ def format_brreg_data(api_data):
 # =========================
 TARGET_FILL_HEX = "F2F2F2"
 
-def load_template_from_url_or_file(template_url=None, uploaded_file=None):
-    """Load Excel template from URL or uploaded file"""
+def load_onedrive_template():
+    """ONLY load Excel template from the specified OneDrive URL"""
+    ONEDRIVE_URL = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc"
+    
     try:
-        # Priority 1: Use uploaded file if provided
-        if uploaded_file:
-            template_bytes = uploaded_file.read()
-            # Verify it's a valid Excel file
-            try:
-                load_workbook(BytesIO(template_bytes))
-                return template_bytes
-            except Exception as e:
-                st.error(f"Opplastet fil er ikke en gyldig Excel-fil: {e}")
-                return None
+        # Convert 1drv.ms link to direct download using OneDrive API
+        # Pattern: Convert to: https://api.onedrive.com/v1.0/shares/u!{encoded}/root/content
         
-        # Priority 2: Try to download from URL
-        if template_url:
-            # For OneDrive links, we need to use a different approach
-            if "1drv.ms" in template_url:
-                # OneDrive links are tricky - they often require authentication
-                # Let's try a direct approach with requests
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-                
-                # Try to get the file
-                response = requests.get(template_url, headers=headers, timeout=30, allow_redirects=True)
-                
-                if response.status_code == 200:
-                    content = response.content
-                    # Check if it's an Excel file (starts with PK for zip files)
-                    if content[:2] == b'PK':
-                        return content
-                    else:
-                        # Might be HTML page, try to extract download link
-                        html_content = response.text
-                        # Look for direct download links in the HTML
-                        import re
-                        # Try to find direct download links
-                        file_links = re.findall(r'href="([^"]+\.xlsx)"', html_content)
-                        for link in file_links:
-                            if 'download' in link.lower():
-                                response2 = requests.get(link, headers=headers, timeout=30)
-                                if response2.status_code == 200 and response2.content[:2] == b'PK':
-                                    return response2.content
+        # Extract the share token from the URL
+        if "1drv.ms" in ONEDRIVE_URL:
+            # The URL format: https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc
+            # We need to extract the share token and encode it
             
-            # If URL approach fails, use GitHub as fallback
-            fallback_url = "https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/PremadeExcelTemplate.xlsx"
-            response = requests.get(fallback_url, timeout=30)
-            if response.status_code == 200:
-                return response.content
+            # First, try to get the redirect URL
+            session = requests.Session()
+            response = session.get(ONEDRIVE_URL, allow_redirects=True, timeout=30)
+            final_url = response.url
+            
+            # If it's a SharePoint URL, convert it
+            if "sharepoint.com" in final_url:
+                # Convert SharePoint URL to direct download
+                # Replace /forms/ with /download? and add download=1
+                download_url = final_url.replace("/forms/", "/download?") + "&download=1"
+            else:
+                # Try the OneDrive API approach
+                # Extract the share ID
+                match = re.search(r'/([a-zA-Z0-9_\-!]+)$', ONEDRIVE_URL)
+                if match:
+                    share_id = match.group(1)
+                    encoded_id = requests.utils.quote(share_id, safe='')
+                    download_url = f"https://api.onedrive.com/v1.0/shares/u!{encoded_id}/root/content"
+                else:
+                    download_url = ONEDRIVE_URL + "?download=1"
+        else:
+            download_url = ONEDRIVE_URL
         
-        # Priority 3: Try local file
-        if os.path.exists("Grundmall.xlsx"):
-            with open("Grundmall.xlsx", "rb") as f:
-                return f.read()
+        # Download the file with proper headers
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*'
+        }
         
-        return None
+        response = requests.get(download_url, headers=headers, timeout=60)
+        
+        if response.status_code == 200:
+            content = response.content
+            
+            # Check if it's an Excel file (Excel files are zip files starting with PK)
+            if len(content) > 100 and content[:2] == b'PK':
+                # Successfully got an Excel file
+                return content
+            else:
+                # Might be HTML, try to find download link
+                html_content = response.text
+                # Look for .xlsx links
+                xlsx_links = re.findall(r'href="([^"]+\.xlsx[^"]*)"', html_content, re.IGNORECASE)
+                for link in xlsx_links:
+                    if 'download' in link.lower() or 'export' in link.lower():
+                        # Try to download from this link
+                        response2 = requests.get(link, headers=headers, timeout=60)
+                        if response2.status_code == 200 and response2.content[:2] == b'PK':
+                            return response2.content
+        
+        # If all else fails, raise an error
+        raise Exception(f"Kunne ikke laste Excel-fil fra OneDrive. Status: {response.status_code}")
         
     except Exception as e:
-        st.error(f"Feil ved lasting av mal: {e}")
-        return None
+        st.error(f"❌ KRITISK FEIL: Kunne ikke laste Excel-malen fra OneDrive: {str(e)}")
+        st.stop()  # Stop the entire app if template can't be loaded
 
 def _rgb_hex_from_color(col):
     if not col: return None
@@ -447,35 +455,28 @@ def main():
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
     
-    # OneDrive template URL
-    ONEDRIVE_TEMPLATE_URL = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc"
-    
-    st.markdown("### 📋 Excel-mal")
-    
-    # Upload template section
-    uploaded_template = st.file_uploader(
-        "Last opp Excel-mal (anbefalt)",
-        type=["xlsx"],
-        help="Last opp Excel-malen din direkte for å sikre at den fungerer",
-        key="template_upload"
-    )
-    
-    if uploaded_template:
-        st.success("✅ Excel-mal lastet opp!")
-    
-    # OR use OneDrive URL
-    st.markdown("---")
-    st.markdown("**ELLER** bruk OneDrive lenke:")
-    
-    col_url1, col_url2 = st.columns([3, 1])
-    
-    with col_url1:
-        template_url = st.text_input(
-            "OneDrive lenke (valgfritt):",
-            value=ONEDRIVE_TEMPLATE_URL,
-            help="Lim inn OneDrive lenken din",
-            key="template_url_input"
-        )
+    # Load OneDrive template ONCE when app starts
+    if 'template_loaded' not in st.session_state:
+        with st.spinner("📥 Laster Excel-mal fra OneDrive..."):
+            try:
+                template_bytes = load_onedrive_template()
+                st.session_state.template_bytes = template_bytes
+                st.session_state.template_loaded = True
+                st.success("✅ Excel-mal lastet fra OneDrive!")
+                
+                # Show template info
+                try:
+                    wb = load_workbook(BytesIO(template_bytes), data_only=True)
+                    sheet_name = wb.sheetnames[0] if wb.sheetnames else "Ukjent"
+                    max_row = wb[sheet_name].max_row if sheet_name in wb.sheetnames else 0
+                    max_col = wb[sheet_name].max_column if sheet_name in wb.sheetnames else 0
+                    st.info(f"**Mal info:** Arknavn: '{sheet_name}' | Størrelse: {max_row} rader × {max_col} kolonner")
+                except:
+                    pass
+            except Exception as e:
+                st.error(f"❌ KRITISK FEIL: Kunne ikke laste Excel-malen fra OneDrive.")
+                st.error(f"Feilmelding: {str(e)}")
+                st.stop()  # Stop the entire app
     
     # Main content columns
     c1, c2 = st.columns(2)
@@ -503,63 +504,6 @@ def main():
                 else:
                     if len(q.strip())>=3: st.warning("Ingen selskaper funnet. Prøv et annet navn.")
                     st.session_state.selected_company_data = None
-
-    st.markdown("---")
-    
-    # Load Excel template when needed
-    if 'template_loaded' not in st.session_state:
-        # Try to load template
-        template_bytes = None
-        
-        # Priority 1: Use uploaded file
-        if uploaded_template:
-            try:
-                uploaded_template.seek(0)
-                template_bytes = uploaded_template.read()
-                load_workbook(BytesIO(template_bytes))  # Verify it's valid
-                st.session_state.template_bytes = template_bytes
-                st.session_state.template_loaded = True
-                st.success("✅ Excel-mal lastet fra opplastet fil!")
-            except Exception as e:
-                st.error(f"❌ Feil ved lasting av opplastet mal: {e}")
-        
-        # Priority 2: Try OneDrive URL
-        elif not st.session_state.get('template_loaded') and template_url:
-            with st.spinner("Prøver å laste fra OneDrive..."):
-                template_bytes = load_template_from_url_or_file(template_url=template_url)
-                if template_bytes:
-                    st.session_state.template_bytes = template_bytes
-                    st.session_state.template_loaded = True
-                    st.success("✅ Excel-mal lastet fra OneDrive!")
-                else:
-                    st.error("❌ Kunne ikke laste fra OneDrive. Last opp filen direkte.")
-        
-        # Priority 3: Use fallback
-        if not st.session_state.get('template_loaded'):
-            with st.spinner("Bruker standard mal..."):
-                template_bytes = load_template_from_url_or_file()
-                if template_bytes:
-                    st.session_state.template_bytes = template_bytes
-                    st.session_state.template_loaded = True
-                    st.success("✅ Standard Excel-mal lastet!")
-                else:
-                    st.session_state.template_loaded = False
-                    st.error("❌ Ingen Excel-mal tilgjengelig. Last opp en mal.")
-    
-    # Reload template if new file uploaded
-    elif uploaded_template and uploaded_template != st.session_state.get('last_uploaded_template'):
-        try:
-            uploaded_template.seek(0)
-            template_bytes = uploaded_template.read()
-            load_workbook(BytesIO(template_bytes))  # Verify it's valid
-            st.session_state.template_bytes = template_bytes
-            st.session_state.last_uploaded_template = uploaded_template
-            st.success("✅ Ny Excel-mal lastet!")
-        except Exception as e:
-            st.error(f"❌ Feil ved lasting av ny mal: {e}")
-    
-    elif st.session_state.get('template_loaded'):
-        st.info("✅ Excel-mal er klar for bruk.")
 
     st.markdown("---")
     
@@ -685,7 +629,7 @@ def main():
         )
     
     st.markdown("---")
-    st.caption("Drevet av Brønnøysund Enhetsregisteret API")
+    st.caption("Drevet av Brønnøysund Enhetsregisteret API | Excel-mal lastet fra OneDrive")
 
 if __name__ == "__main__":
     main()
