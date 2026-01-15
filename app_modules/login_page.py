@@ -5,7 +5,7 @@ import msal
 # CONFIGURATION
 # ---------------------------------------------------------
 TENANT_ID = "consumers"
-CLIENT_ID = "YOUR_CLIENT_ID"   # keep your real client ID here
+CLIENT_ID = "8dcb3914-362f-4c33-9348-d8f9b41347c2"   # keep your real client ID here
 
 AUTHORITY = "https://login.microsoftonline.com/consumers"
 SCOPES = ["Files.Read"]
