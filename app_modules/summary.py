@@ -1,5 +1,7 @@
+import streamlit as st
 import requests
 import re
+
 
 def _clean_text(t: str) -> str:
     """Remove weird whitespace and shorten long text."""
@@ -134,3 +136,12 @@ def generate_company_summary(company_data: dict) -> str:
 
     # 4) Fallback
     return base or "Ingen tilgjengelig selskapsbeskrivelse."
+
+
+# ---------------------------------------------------------
+# PAGE VIEW (so it works as a selectable page)
+# ---------------------------------------------------------
+def run():
+    st.title("📝 Summary Module")
+    st.write("Dette modulen genererer selskapsbeskrivelser fra flere kilder.")
+    st.info("Brukes av hovedsiden for å lage 'Om oss'‑tekst.")
