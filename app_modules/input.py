@@ -1,5 +1,6 @@
 import streamlit as st
-from step_3_company_data import search_brreg_live
+from app_modules.company_data import search_brreg_live
+
 
 def get_user_inputs():
     """
@@ -63,3 +64,12 @@ def get_user_inputs():
                 st.warning("Ingen selskaper funnet.")
 
     return pdf_bytes, selected_company
+
+
+# ---------------------------------------------------------
+# PAGE VIEW (so it works as a selectable page)
+# ---------------------------------------------------------
+def run():
+    st.title("📄 Input-modul")
+    st.write("Last opp PDF og søk etter selskap.")
+    st.info("Denne modulen brukes av hovedsiden for å hente input-data.")
