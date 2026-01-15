@@ -5,53 +5,62 @@ BRREG_SEARCH_URL = "https://data.brreg.no/enhetsregisteret/api/enheter"
 BRREG_ENTITY_URL = "https://data.brreg.no/enhetsregisteret/api/enheter/{}"
 
 
+# ---------------------------------------------------------
+# LIVE SEARCH
+# ---------------------------------------------------------
 def search_brreg_live(name: str):
     """
     Live search for companies in Brønnøysund.
-    Used in Step 1 for the dropdown menu.
     Returns a list of raw API objects.
     """
 
-    if not name or len(name.strip()) < 2:
+    name = (name or "").strip()
+    if len(name) < 2:
         return []
 
     try:
         r = requests.get(
             BRREG_SEARCH_URL,
-            params={"navn": name.strip(), "size": 10},
-            timeout=20
+            params={"navn": name, "size": 10},
+            timeout=10
         )
+        r.raise_for_status()
 
-        if r.status_code == 200:
-            return r.json().get("_embedded", {}).get("enheter", []) or []
+        data = r.json()
+        return data.get("_embedded", {}).get("enheter", []) or []
 
     except Exception:
-        pass
-
-    return []
+        return []
 
 
+# ---------------------------------------------------------
+# FETCH FULL COMPANY DATA
+# ---------------------------------------------------------
 def fetch_company_by_org(org_number: str):
     """
     Fetch full company details using org number.
     Returns raw API JSON or None.
     """
 
+    org_number = (org_number or "").strip()
+    if not org_number.isdigit():
+        return None
+
     try:
         r = requests.get(
             BRREG_ENTITY_URL.format(org_number),
-            timeout=20
+            timeout=10
         )
-
-        if r.status_code == 200:
-            return r.json()
+        r.raise_for_status()
+        return r.json()
 
     except Exception:
-        pass
-
-    return None
+        return None
 
 
+# ---------------------------------------------------------
+# FORMAT RAW API DATA INTO CLEAN DICT
+# ---------------------------------------------------------
 def format_company_data(api_data):
     """
     Converts raw Brønnøysund API data into a clean dictionary
@@ -75,7 +84,7 @@ def format_company_data(api_data):
     }
 
     # Address
-    addr = api_data.get("forretningsadresse", {}) or {}
+    addr = api_data.get("forretningsadresse") or {}
     if addr:
         a = addr.get("adresse", [])
         out["address"] = ", ".join(a) if isinstance(a, list) else a
@@ -83,7 +92,7 @@ def format_company_data(api_data):
         out["city"] = addr.get("poststed", "")
 
     # NACE
-    nace = api_data.get("naeringskode1", {}) or {}
+    nace = api_data.get("naeringskode1") or {}
     if nace:
         out["nace_code"] = nace.get("kode", "")
         out["nace_description"] = nace.get("beskrivelse", "")
@@ -92,7 +101,7 @@ def format_company_data(api_data):
 
 
 # ---------------------------------------------------------
-# OPTIONAL PAGE VIEW (for debugging or standalone testing)
+# OPTIONAL DEBUG PAGE
 # ---------------------------------------------------------
 def run():
     st.title("🔍 Company Data Module")
