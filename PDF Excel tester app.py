@@ -147,15 +147,46 @@ def format_brreg_data(api_data):
 # =========================
 TARGET_FILL_HEX = "F2F2F2"
 
-def load_template_from_github():
-    if os.path.exists("Grundmall.xlsx"):
-        return open("Grundmall.xlsx","rb").read()
+def load_template_from_github(force_refresh=False):
+    """Load Excel template from GitHub with real-time update capability"""
+    if not force_refresh and 'template_github_url' in st.session_state:
+        cache_time = st.session_state.get('template_cache_time', 0)
+        if datetime.now().timestamp() - cache_time < 3600:
+            return st.session_state.get('template_bytes')
+    
     try:
-        r = requests.get("https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/PremadeExcelTemplate.xlsx", timeout=30)
-        if r.status_code==200: return r.content
-    except Exception:
-        pass
-    st.error("Kunne ikke laste Excel-malen fra GitHub"); return None
+        github_urls = [
+            "https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/PremadeExcelTemplate.xlsx",
+            "https://raw.githubusercontent.com/Shaedyr/PDF-to-premade-Excel-Sheet/main/Grundmall.xlsx"
+        ]
+        
+        template_bytes = None
+        
+        for url in github_urls:
+            try:
+                response = requests.get(url, timeout=30)
+                if response.status_code == 200:
+                    template_bytes = response.content
+                    st.session_state.template_github_url = url
+                    st.session_state.template_cache_time = datetime.now().timestamp()
+                    break
+            except:
+                continue
+        
+        if not template_bytes and os.path.exists("Grundmall.xlsx"):
+            with open("Grundmall.xlsx", "rb") as f:
+                template_bytes = f.read()
+        
+        if template_bytes:
+            st.session_state.template_bytes = template_bytes
+            return template_bytes
+        else:
+            st.error("❌ Kunne ikke laste Excel-malen")
+            return None
+            
+    except Exception as e:
+        st.error(f"Feil ved lasting av mal: {e}")
+        return None
 
 def _rgb_hex_from_color(col):
     if not col: return None
@@ -207,7 +238,6 @@ def scan_and_map_fill_cells(wb_bytes):
     for ws in wb.worksheets:
         fillables = []
         assigned = {}
-        # collect fillable cells and debug info
         for row in ws.iter_rows():
             for c in row:
                 try:
@@ -226,7 +256,6 @@ def scan_and_map_fill_cells(wb_bytes):
                         fillables.append((c.row, c.column, c.coordinate))
                 except Exception:
                     continue
-        # local neighborhood match
         for r,c,coord in fillables:
             neighbors = [(r,c-1),(r-1,c),(r,c+1),(r+1,c),(r-1,c-1),(r-1,c+1),(r+1,c-1),(r+1,c+1)]
             for rr,cc in neighbors:
@@ -239,7 +268,6 @@ def scan_and_map_fill_cells(wb_bytes):
                             assigned[f] = (coord,"local",str(val)); break
                 except Exception:
                     continue
-        # global mapping: find label cells and assign nearest fillable
         label_cells = []
         for row in ws.iter_rows():
             for c in row:
@@ -298,7 +326,6 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
     if not first_sheet:
         report["errors"].append(("NO_SHEET",None,"No sheets")); return template_bytes, report
     ws = wb[first_sheet]
-    # fill mapped fields
     for field, val in field_values.items():
         if field in first_map:
             coord = first_map[field][0]
@@ -311,7 +338,6 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
                 report["errors"].append((first_sheet,coord,field,str(e)))
         else:
             report["skipped"].append((first_sheet,None,field,"No mapped cell on first sheet"))
-    # auto-map remaining to unmatched first-sheet fillables
     remaining = {k:v for k,v in field_values.items() if v not in (None,"")}
     for (_s,_coord,f) in report["filled"]:
         remaining.pop(f, None)
@@ -324,7 +350,6 @@ def fill_workbook_bytes(template_bytes: bytes, field_values: dict):
                 wb[sheetname][coord].value = str(val); report["filled"].append((sheetname,coord,field_name,"auto-mapped"))
             except Exception as e:
                 report["errors"].append((sheetname,coord,field_name,str(e)))
-    # replace "Skriv her" with company_summary (or fallback A46)
     summary = field_values.get("company_summary") or ""
     if summary:
         wrote=False
@@ -394,15 +419,33 @@ def fetch_brreg_by_org(org_number: str):
     return None
 
 # =========================
-# STREAMLIT UI (same layout)
+# STREAMLIT UI
 # =========================
 def main():
     st.title("📄 PDF → Excel (Brønnøysund)")
     st.markdown("Hent selskapsinformasjon og oppdater Excel automatisk")
     st.markdown("---")
+    
     c1, c2 = st.columns(2)
+    
     with c1:
         pdf_file = st.file_uploader("PDF dokument (valgfritt)", type="pdf", help="Last opp PDF for referanse")
+        
+        # Refresh template button
+        st.markdown("---")
+        col_refresh1, col_refresh2 = st.columns([3, 1])
+        with col_refresh1:
+            st.markdown("**Excel-mal:**")
+        with col_refresh2:
+            if st.button("🔄 Oppdater", key="refresh_template", help="Last malen på nytt fra GitHub"):
+                with st.spinner("Oppdaterer mal..."):
+                    new_template = load_template_from_github(force_refresh=True)
+                    if new_template:
+                        st.success("✅ Mal oppdatert!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Kunne ikke oppdatere mal")
+    
     with c2:
         q = st.text_input("Selskapsnavn *", placeholder="Skriv her... (minst 2 bokstaver)", key="company_search_input")
         if st.session_state.get('current_search','') != q:
@@ -425,11 +468,33 @@ def main():
                     st.session_state.selected_company_data = None
 
     st.markdown("---")
+    
+    # Load Excel template with real-time capability
     if 'template_loaded' not in st.session_state:
-        with st.spinner("Laster Excel-mal..."):
+        with st.spinner("Laster Excel-mal fra GitHub..."):
             tb = load_template_from_github()
-            if tb: st.session_state.template_bytes = tb; st.session_state.template_loaded=True; st.success("✅ Excel-mal lastet")
-            else: st.session_state.template_loaded=False; st.error("❌ Kunne ikke laste Excel-mal")
+            if tb:
+                st.session_state.template_bytes = tb
+                st.session_state.template_loaded = True
+                st.success("✅ Excel-mal lastet fra GitHub")
+                
+                # Show template info
+                try:
+                    wb = load_workbook(BytesIO(tb), data_only=True)
+                    sheet_name = wb.sheetnames[0] if wb.sheetnames else "Ukjent"
+                    st.info(f"**Mal info:** Arknavn: '{sheet_name}' | Sist oppdatert: {datetime.now().strftime('%H:%M:%S')}")
+                except:
+                    pass
+            else:
+                st.session_state.template_loaded = False
+                st.error("❌ Kunne ikke laste Excel-mal")
+    else:
+        # Template is already loaded, but we can show status
+        if st.session_state.get('template_github_url'):
+            try:
+                st.info(f"📋 Mal lastet fra: {st.session_state.template_github_url}")
+            except:
+                pass
 
     # Inspector
     st.markdown("---"); st.markdown("### 🔎 Inspeksjon (valgfritt)")
