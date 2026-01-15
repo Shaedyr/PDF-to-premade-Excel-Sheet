@@ -45,7 +45,7 @@ def summary_from_brreg(data: dict) -> str:
                 parts.append(f"Det er et mellomstort foretak med {e} ansatte.")
             else:
                 parts.append(f"Selskapet har {e} ansatte.")
-        except:
+        except Exception:
             pass
 
     if nace:
@@ -75,7 +75,7 @@ def summary_from_wikipedia(name: str) -> str:
             extract = data.get("extract", "")
             return _clean_text(extract)
 
-    except:
+    except Exception:
         pass
 
     return ""
@@ -100,7 +100,7 @@ def summary_from_duckduckgo(query: str) -> str:
             abstract = r.json().get("AbstractText", "")
             return _clean_text(abstract)
 
-    except:
+    except Exception:
         pass
 
     return ""
