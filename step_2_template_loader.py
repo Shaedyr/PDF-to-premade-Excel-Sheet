@@ -3,7 +3,7 @@ import streamlit as st
 from io import BytesIO
 
 # Your OneDrive share link (replace with your own)
-ONEDRIVE_URL = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc"
+ONEDRIVE_URL = "https://1drv.ms/x/c/f5e2800feeb07258/IQBBPI2scMXjQ6bi18LIvXFGAWFnYqG3J_kCKfewCEid9Bc?download=1"
 
 
 def _convert_onedrive_url(url: str) -> str:
