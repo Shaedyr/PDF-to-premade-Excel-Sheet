@@ -1,44 +1,59 @@
 import streamlit as st
 import msal
 
-TENANT_ID = "YOUR_TENANT_ID"
-CLIENT_ID = "YOUR_CLIENT_ID"
+# ---------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------
+TENANT_ID = "YOUR_TENANT_ID"          # Replace with your real Tenant ID
+CLIENT_ID = "YOUR_CLIENT_ID"          # Replace with your real Client ID
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPES = ["Files.Read"]
+SCOPES = ["Files.Read"]               # Permission to read files from OneDrive
 
+
+# ---------------------------------------------------------
+# MSAL APP FACTORY
+# ---------------------------------------------------------
 def get_msal_app():
     return msal.PublicClientApplication(
         CLIENT_ID,
         authority=AUTHORITY
     )
 
+
+# ---------------------------------------------------------
+# LOGIN PAGE
+# ---------------------------------------------------------
 def run():
     st.title("🔐 Login to Microsoft")
 
-    if "access_token" in st.session_state:
-        st.success("You are already logged in.")
+    # If already logged in
+    if "token" in st.session_state:
+        st.success("Du er allerede logget inn.")
         return
 
-    st.write("Click the button below to sign in to Microsoft.")
+    st.write("Klikk på knappen under for å logge inn med Microsoft.")
 
-    if st.button("Login with Microsoft"):
+    # Start login flow
+    if st.button("Login med Microsoft"):
         app = get_msal_app()
         flow = app.initiate_device_flow(scopes=SCOPES)
 
         if "user_code" not in flow:
-            st.error("Could not start login flow.")
+            st.error("Kunne ikke starte innloggingsflyten.")
             return
 
-        st.info("Follow these steps:")
-        st.write("1. Go to https://microsoft.com/devicelogin")
-        st.write(f"2. Enter this code: **{flow['user_code']}**")
-        st.write("3. Complete the login in your browser.")
+        st.info("Følg disse stegene:")
+        st.write("1. Gå til https://microsoft.com/devicelogin")
+        st.write(f"2. Skriv inn denne koden: **{flow['user_code']}**")
+        st.write("3. Fullfør innloggingen i nettleseren.")
 
-        if st.button("I have completed login"):
+        # Button to confirm login is completed
+        if st.button("Jeg har fullført innloggingen"):
             result = app.acquire_token_by_device_flow(flow)
 
             if "access_token" in result:
-                st.session_state["access_token"] = result["access_token"]
-                st.success("Login successful!")
+                # Store the entire token result
+                st.session_state["token"] = result
+                st.success("Innlogging vellykket!")
             else:
-                st.error("Login failed. Try again.")
+                st.error("Innlogging feilet. Prøv igjen.")
