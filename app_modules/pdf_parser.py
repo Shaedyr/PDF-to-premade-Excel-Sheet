@@ -3,7 +3,6 @@ import pdfplumber
 import re
 from io import BytesIO
 
-
 # ---------------------------------------------------------
 # REGEX PATTERNS
 # ---------------------------------------------------------
@@ -15,7 +14,7 @@ ORG_IN_TEXT_RE = re.compile(
 )
 
 COMPANY_WITH_SUFFIX_RE = re.compile(
-    r"([A-ZÆØÅ][A-Za-zÆØÅæøå0-9\.\-&\s]{1,120}?)\s+(AS|ASA|ANS|DA|ENK|KS|BA)\b",
+    r"([A-ZÆØÅ][A-Za-zÆØÅæøå0-9.\-&\s]{1,120}?)\s+(AS|ASA|ANS|DA|ENK|KS|BA)\b",
     flags=re.I
 )
 
@@ -24,7 +23,7 @@ POST_CITY_RE = re.compile(
 )
 
 ADDRESS_RE = re.compile(
-    r"([A-ZÆØÅa-zæøå\.\-\s]{3,60}\s+\d{1,4}[A-Za-z]?)"
+    r"([A-ZÆØÅa-zæøå.\-\s]{3,60}\s+\d{1,4}[A-Za-z]?)"
 )
 
 REVENUE_RE = re.compile(
@@ -37,7 +36,6 @@ DEADLINE_RE = re.compile(
     flags=re.I
 )
 
-
 # ---------------------------------------------------------
 # PDF TEXT EXTRACTION
 # ---------------------------------------------------------
@@ -48,16 +46,20 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     Returns a single string.
     """
 
+    if not pdf_bytes:
+        return ""
+
     try:
         text = ""
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages[:6]:
-                text += page.extract_text() or ""
+                extracted = page.extract_text()
+                if extracted:
+                    text += extracted + "\n"
         return text
 
     except Exception:
         return ""
-
 
 # ---------------------------------------------------------
 # FIELD EXTRACTION
@@ -76,6 +78,9 @@ def extract_fields_from_pdf(pdf_bytes: bytes) -> dict:
 
     txt = extract_text_from_pdf(pdf_bytes)
     fields = {}
+
+    if not txt:
+        return fields
 
     # 1) Org number
     m = ORG_IN_TEXT_RE.search(txt)
@@ -120,7 +125,6 @@ def extract_fields_from_pdf(pdf_bytes: bytes) -> dict:
         fields["tender_deadline"] = mdate.group(1).strip()
 
     return fields
-
 
 # ---------------------------------------------------------
 # PAGE VIEW (so it works as a selectable page)
