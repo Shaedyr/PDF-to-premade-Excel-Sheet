@@ -12,12 +12,17 @@ TARGET_FILL_HEX = "F2F2F2"   # Light gray fill used to mark fillable cells
 def _rgb_hex_from_color(col):
     if not col:
         return None
+
     rgb = getattr(col, "rgb", None)
     if not rgb:
         return None
+
     rgb = rgb.upper()
+
+    # Remove alpha channel if present (ARGB → RGB)
     if len(rgb) == 8:
         rgb = rgb[2:]
+
     return rgb if len(rgb) == 6 else None
 
 
@@ -63,22 +68,21 @@ def scan_template(template_bytes):
                 hexcol = _rgb_hex_from_color(fg)
 
                 if hexcol == TARGET_FILL_HEX:
-                    # Try to find label near the cell
                     label = None
 
-                    # Left
+                    # Try left cell
                     if cell.column > 1:
                         left = ws.cell(row=cell.row, column=cell.column - 1).value
                         if left:
                             label = str(left)
 
-                    # Above
+                    # Try above cell
                     if not label and cell.row > 1:
                         above = ws.cell(row=cell.row - 1, column=cell.column).value
                         if above:
                             label = str(above)
 
-                    # Try to match label to a field
+                    # Match label to field
                     if label:
                         norm = _normalize_label(label)
                         for field, kws in FIELD_KEYWORDS.items():
@@ -95,8 +99,8 @@ def scan_template(template_bytes):
 # ---------------------------------------------------------
 def fill_excel(template_bytes, field_values, summary_text):
     wb = load_workbook(BytesIO(template_bytes))
-
     mapping = scan_template(template_bytes)
+
     first_sheet = wb.sheetnames[0]
     ws_first = wb[first_sheet]
 
@@ -122,6 +126,7 @@ def fill_excel(template_bytes, field_values, summary_text):
             if placed:
                 break
 
+        # Fallback location
         if not placed:
             ws_first["A46"] = summary_text
             ws_first["A46"].alignment = Alignment(wrap_text=True, vertical="top")
@@ -134,7 +139,7 @@ def fill_excel(template_bytes, field_values, summary_text):
 
 
 # ---------------------------------------------------------
-# PAGE VIEW (so it works as a selectable page)
+# PAGE VIEW (for debugging)
 # ---------------------------------------------------------
 def run():
     import streamlit as st
