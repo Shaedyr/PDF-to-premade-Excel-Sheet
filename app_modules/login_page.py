@@ -4,10 +4,12 @@ import msal
 # ---------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------
-TENANT_ID = "YOUR_TENANT_ID"          # Replace with your real Tenant ID
-CLIENT_ID = "YOUR_CLIENT_ID"          # Replace with your real Client ID
-AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPES = ["Files.Read"]               # Permission to read files from OneDrive
+TENANT_ID = "consumers"
+CLIENT_ID = "YOUR_CLIENT_ID"   # keep your real client ID here
+
+AUTHORITY = "https://login.microsoftonline.com/consumers"
+SCOPES = ["Files.Read"]
+
 
 
 # ---------------------------------------------------------
