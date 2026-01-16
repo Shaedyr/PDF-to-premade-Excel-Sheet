@@ -14,12 +14,18 @@ def _rgb_hex_from_color(col):
         return None
 
     rgb = getattr(col, "rgb", None)
-    if not rgb:
+
+    # Ignore theme colors, indexed colors, or missing RGB
+    if not rgb or not isinstance(rgb, str):
         return None
 
     rgb = rgb.upper()
 
-    # Remove alpha channel if present (ARGB → RGB)
+    # Ignore "AUTO" or other non-hex values
+    if not all(c in "0123456789ABCDEF" for c in rgb if c != "A"):
+        return None
+
+    # Remove alpha channel (ARGB → RGB)
     if len(rgb) == 8:
         rgb = rgb[2:]
 
